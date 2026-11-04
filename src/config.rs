@@ -704,7 +704,17 @@ impl Config {
 
     pub fn load_from(opts: &LoadOptions) -> Result<Self> {
         let global_path = Self::global_path_from(opts)?;
-        let mut global = GlobalFile::read(&global_path)?;
+        let mut warnings = Vec::new();
+        let mut global = match GlobalFile::read(&global_path) {
+            Ok(global) => global,
+            Err(error) => {
+                warnings.push(format!("skipping configuration: {error:#}"));
+                GlobalFile {
+                    servers: BTreeMap::new(),
+                    extra: BTreeMap::new(),
+                }
+            }
+        };
         let base = global_path.parent().unwrap_or_else(|| Path::new("."));
         let home = opts.home.clone().or_else(|| home_from_env(&opts.env));
         for server in global.servers.values_mut() {
@@ -729,7 +739,6 @@ impl Config {
             .clients
             .clone()
             .unwrap_or_else(|| Client::all().to_vec());
-        let mut warnings = Vec::new();
         if !clients.is_empty() {
             let discovery = import::discover(opts, &clients)?;
             warnings.extend(discovery.warnings);
@@ -896,7 +905,7 @@ impl Config {
         };
 
         if discovery.sources.is_empty() {
-            if clients.len() == 1 {
+            if clients.len() == 1 && report.warnings.is_empty() {
                 let checked = if discovery.expected.is_empty() {
                     "no known configuration paths (home directory is not set)".to_string()
                 } else {
@@ -907,16 +916,27 @@ impl Config {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                bail!(
+                report.warnings.push(format!(
                     "no {} configuration found (checked: {checked})",
                     clients[0].display_name()
-                );
+                ));
             }
+            return Ok(report);
+        }
+        if discovery.candidates.is_empty() {
             return Ok(report);
         }
 
         let _lock = lock_config(&config_path)?;
-        let mut global = GlobalFile::read(&config_path)?;
+        let mut global = match GlobalFile::read(&config_path) {
+            Ok(global) => global,
+            Err(error) => {
+                report.warnings.push(format!(
+                    "skipping import; destination configuration is invalid: {error:#}"
+                ));
+                return Ok(report);
+            }
+        };
         let mut by_name: BTreeMap<String, Vec<import::Candidate>> = BTreeMap::new();
         for candidate in discovery.candidates {
             by_name

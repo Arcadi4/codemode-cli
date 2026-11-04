@@ -335,18 +335,22 @@ pub(crate) fn discover(opts: &LoadOptions, clients: &[Client]) -> Result<Discove
 
     let mut sources = BTreeSet::new();
     let mut parsed = Vec::new();
+    let mut warnings = Vec::new();
     let home_path = home(opts);
     for spec in specs {
         if !spec.path.is_file() {
             continue;
         }
-        sources.insert(spec.path.clone());
-        let parsed_source = parse_source(&spec, home_path.as_deref())?;
-        parsed.push((spec, parsed_source));
+        match parse_source(&spec, home_path.as_deref()) {
+            Ok(parsed_source) => {
+                sources.insert(spec.path.clone());
+                parsed.push((spec, parsed_source));
+            }
+            Err(error) => warnings.push(format!("skipping configuration: {error:#}")),
+        }
     }
 
     let mut candidates = Vec::new();
-    let mut warnings = Vec::new();
     for client in clients {
         let client_sources: Vec<(&SourceSpec, &ParsedSource)> = parsed
             .iter()
@@ -384,9 +388,6 @@ pub(crate) fn discover_override(
     } else {
         opts.cwd.join(path)
     };
-    if !path.is_file() {
-        bail!("source file does not exist: {}", path.display());
-    }
     let (base, workspace) = source_base_for_path(&path, &opts.cwd);
     let mut specs = Vec::new();
     match client {
@@ -428,7 +429,17 @@ pub(crate) fn discover_override(
     let mut parsed = Vec::new();
     let home_path = home(opts);
     for spec in &specs {
-        parsed.push((spec.clone(), parse_source(spec, home_path.as_deref())?));
+        match parse_source(spec, home_path.as_deref()) {
+            Ok(source) => parsed.push((spec.clone(), source)),
+            Err(error) => {
+                return Ok(Discovery {
+                    candidates: Vec::new(),
+                    sources: Vec::new(),
+                    warnings: vec![format!("skipping configuration: {error:#}")],
+                    expected: vec![path],
+                });
+            }
+        }
     }
     let references: Vec<(&SourceSpec, &ParsedSource)> =
         parsed.iter().map(|(spec, source)| (spec, source)).collect();
@@ -2023,7 +2034,13 @@ fn finalize_client(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| opts.cwd.clone());
-            let mut config = selected.finish(&name, &path)?;
+            let mut config = match selected.finish(&name, &path) {
+                Ok(config) => config,
+                Err(error) => {
+                    warnings.push(format!("skipping server configuration: {error:#}"));
+                    continue;
+                }
+            };
             if client == Client::Claude {
                 let project = find_upward_file(&opts.cwd, ".mcp.json")
                     .map(|(_, root)| root)
