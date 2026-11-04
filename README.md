@@ -33,9 +33,9 @@ cm import --all
 cm import codex --path /path/to/config.toml
 ```
 
-The global config takes precedence; different same-name definitions from multiple clients require an explicit global choice. Identical definitions are deduplicated. Disabled definitions remain disabled. Conflicting imports fail without changing the global file; `--force` explicitly permits replacement. Source client files are never edited. Global writes are atomic and owner-only.
+The global config takes precedence; ambiguous same-name definitions are excluded from automatic discovery until a global choice is supplied. Identical definitions are deduplicated. Disabled definitions remain disabled. Imports skip ambiguous source servers, but conflicts with existing global definitions fail without changing the global file; `--force` explicitly permits replacement. Source client files are never edited. Global writes are atomic and owner-only.
 
-Missing configuration files are skipped silently, including explicit import paths. Invalid or unreadable files produce stderr warnings without blocking valid sources. Imports with no usable source are no-ops; an invalid global destination is left unchanged, including with `--force`.
+Missing configuration files are skipped silently, including explicit import paths. Invalid or unreadable files produce stderr warnings without blocking valid sources. Invalid server definitions are skipped without discarding healthy entries in the same file. Imports with no usable source are no-ops; an invalid global destination is left unchanged, including with `--force`.
 
 Named VS Code profiles are discovered alongside the default profile. Different definitions of the same name in independent profiles are not arbitrarily merged: use a global choice or import one profile explicitly with `--path`. An applicable workspace definition overrides profile-level definitions.
 
@@ -51,6 +51,7 @@ On macOS, `--native-credentials` also permits read-only access to endpoint-bound
 - Tool/prompt arguments accept a JSON object, `@file.json`, or `-` for stdin. Prompt/completion argument values must be strings. Tool input and declared output schemas are validated. JSON Schema drafts 4, 6, 7, 2019-09, and 2020-12 are supported; the default is 2020-12. External schema references are not fetched.
 - `--json` preserves complete result envelopes. Image/audio `data` and resource `blob` fields become `{ "path": "/absolute/file" }` descriptors. Other fields remain intact. Artifacts have owner-only permissions and survive command exit; remove them when no longer needed. Links are not downloaded, and returned HTML is never executed.
 - Diagnostics and server stderr stay on stderr. Exit status is `0` for success, `1` for operational/tool errors, `2` for usage errors, `130` for SIGINT, and `143` for SIGTERM. Broken pipes terminate quietly. A timeout/interruption does not prove a side effect did not execute; interrupted calls are not automatically replayed.
+- Unscoped tool, prompt, resource, and template catalogs skip failed servers with stderr diagnostics and return usable results, or `[]`, with status `0`. `--server` and targeted operations still fail when their target fails. Partial catalogs from a failed server are discarded. Ambiguous names remain visible in lists; use `--server` to select the source.
 - `--timeout` bounds each request, including startup/probing; a shorter source-client timeout still applies. `--max-response-bytes` defaults to 64 MiB of encoded response data and can be raised for large media. Stdio processes receive EOF and are reaped, with termination escalation if necessary.
 
 ## Asynchronous Tasks

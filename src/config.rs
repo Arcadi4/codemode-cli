@@ -705,16 +705,16 @@ impl Config {
     pub fn load_from(opts: &LoadOptions) -> Result<Self> {
         let global_path = Self::global_path_from(opts)?;
         let mut warnings = Vec::new();
-        let mut global = match GlobalFile::read(&global_path) {
-            Ok(global) => global,
+        let mut global = match GlobalFile::read_tolerant(&global_path) {
+            Ok((global, global_warnings)) => {
+                warnings.extend(global_warnings);
+                global
+            }
             Err(error) => {
                 if !matches!(global_path.try_exists(), Ok(false)) {
                     warnings.push(format!("skipping configuration: {error:#}"));
                 }
-                GlobalFile {
-                    servers: BTreeMap::new(),
-                    extra: BTreeMap::new(),
-                }
+                GlobalFile::default()
             }
         };
         let base = global_path.parent().unwrap_or_else(|| Path::new("."));
@@ -774,27 +774,36 @@ impl Config {
                     continue;
                 }
                 let first = enabled[0];
+                let mut differing = Vec::new();
                 for candidate in enabled.iter().skip(1) {
                     if !first.config.same_definition(&candidate.config, false) {
-                        let mut details = Vec::new();
-                        for item in &enabled {
+                        differing.extend(first.config.differing_fields(&candidate.config));
+                    }
+                }
+                if !differing.is_empty() {
+                    let details = enabled
+                        .iter()
+                        .map(|item| {
                             let paths = item
                                 .paths
                                 .iter()
                                 .map(|path| path.display().to_string())
                                 .collect::<Vec<_>>()
                                 .join(", ");
-                            details.push(format!("  - {}: {}", item.client.display_name(), paths));
-                        }
-                        bail!(
-                            "conflicting definitions for MCP server '{name}' from client configs:\n{}\n\
-                             Different fields: {}.\n\
-                             Define '{name}' in {} to choose one definition, or remove it from one source.",
-                            details.join("\n"),
-                            first.config.differing_fields(&candidate.config).join(", "),
-                            global_path.display()
-                        );
-                    }
+                            format!("  - {}: {}", item.client.display_name(), paths)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    differing.sort();
+                    differing.dedup();
+                    warnings.push(format!(
+                        "skipping MCP server '{name}': conflicting definitions from client configs:\n{details}\n\
+                         Different fields: {}.\n\
+                         Define '{name}' in {} to choose one definition, or remove it from one source.",
+                        differing.join(", "),
+                        global_path.display()
+                    ));
+                    continue;
                 }
                 origins.insert(
                     name.clone(),
@@ -963,7 +972,33 @@ impl Config {
                 });
                 continue;
             }
-            let chosen = unique_candidate(&enabled)?;
+            if enabled
+                .iter()
+                .skip(1)
+                .any(|candidate| !enabled[0].config.same_definition(&candidate.config, false))
+            {
+                let details = enabled
+                    .iter()
+                    .map(|item| {
+                        format!(
+                            "{} ({})",
+                            item.client.display_name(),
+                            item.paths
+                                .iter()
+                                .map(|path| path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                report.skipped.push(import::ImportSkip {
+                    name,
+                    reason: format!("conflicting definitions from: {details}"),
+                });
+                continue;
+            }
+            let chosen = enabled[0];
             if let Some(existing) = global.servers.get(&name).cloned() {
                 if chosen.config.same_definition(&existing, true) {
                     report.unchanged.push(name);
@@ -1010,38 +1045,6 @@ impl fmt::Debug for Config {
     }
 }
 
-fn unique_candidate<'a>(candidates: &[&'a import::Candidate]) -> Result<&'a import::Candidate> {
-    let first = candidates
-        .first()
-        .copied()
-        .ok_or_else(|| anyhow!("no enabled candidate"))?;
-    for candidate in candidates.iter().skip(1) {
-        if !first.config.same_definition(&candidate.config, false) {
-            let details = candidates
-                .iter()
-                .map(|item| {
-                    format!(
-                        "{} ({})",
-                        item.client.display_name(),
-                        item.paths
-                            .iter()
-                            .map(|path| path.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            bail!(
-                "conflicting imported definitions for MCP server '{}': {details}. \
-                 Define it in the cm global config to choose one.",
-                first.name
-            );
-        }
-    }
-    Ok(first)
-}
-
 fn conflict_detail(existing: &ServerConfig, incoming: &ServerConfig) -> String {
     let mut fields = existing.differing_fields(incoming);
     if existing.disabled != incoming.disabled {
@@ -1054,6 +1057,7 @@ fn conflict_detail(existing: &ServerConfig, incoming: &ServerConfig) -> String {
     }
 }
 
+#[derive(Default)]
 struct GlobalFile {
     servers: BTreeMap<String, ServerConfig>,
     extra: BTreeMap<String, Value>,
@@ -1061,11 +1065,19 @@ struct GlobalFile {
 
 impl GlobalFile {
     fn read(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self {
-                servers: BTreeMap::new(),
-                extra: BTreeMap::new(),
-            });
+        Self::read_with(path, false).map(|(global, _)| global)
+    }
+
+    fn read_tolerant(path: &Path) -> Result<(Self, Vec<String>)> {
+        Self::read_with(path, true)
+    }
+
+    /// Import stays strict so an invalid destination is never rewritten; discovery
+    /// skips broken entries with warnings while keeping healthy siblings.
+    fn read_with(path: &Path, tolerate_invalid_servers: bool) -> Result<(Self, Vec<String>)> {
+        let mut warnings = Vec::new();
+        if matches!(path.try_exists(), Ok(false)) {
+            return Ok((Self::default(), warnings));
         }
         let text = read_text(path)?;
         let value = parse_json_value(&text, path)?;
@@ -1075,20 +1087,18 @@ impl GlobalFile {
         let server_values = match object.get("mcpServers") {
             Some(Value::Object(servers)) => servers,
             Some(_) => bail!("{}: 'mcpServers' must be an object", path.display()),
-            None if object.is_empty() => {
-                return Ok(Self {
-                    servers: BTreeMap::new(),
-                    extra: BTreeMap::new(),
-                });
-            }
+            None if object.is_empty() => return Ok((Self::default(), warnings)),
             None if object.keys().all(|key| key.starts_with('$')) => {
-                return Ok(Self {
-                    servers: BTreeMap::new(),
-                    extra: object
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
-                });
+                return Ok((
+                    Self {
+                        servers: BTreeMap::new(),
+                        extra: object
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    },
+                    warnings,
+                ));
             }
             None => bail!(
                 "{}: missing top-level 'mcpServers' object (FastMCP mcp.json shape)",
@@ -1098,31 +1108,48 @@ impl GlobalFile {
         let mut servers = BTreeMap::new();
         for (name, value) in server_values {
             if name.trim().is_empty() {
-                bail!("{}: server name cannot be empty", path.display());
+                let message = format!("{}: server name cannot be empty", path.display());
+                if tolerate_invalid_servers {
+                    warnings.push(format!("skipping server configuration: {message}"));
+                    continue;
+                }
+                bail!("{message}");
             }
-            let raw: RawServerConfig = serde_json::from_value(value.clone()).map_err(|_| {
-                anyhow!(
-                    "{}: invalid definition shape for server '{name}'",
-                    path.display()
-                )
-            })?;
-            let server = raw.into_server().map_err(|error| {
-                anyhow!(
-                    "{}: invalid definition for server '{name}': {error}",
-                    path.display()
-                )
-            })?;
-            server.validate().with_context(|| {
-                format!("{}: invalid definition for server '{name}'", path.display())
-            })?;
-            servers.insert(name.clone(), server);
+            match Self::parse_server(path, name, value) {
+                Ok(server) => {
+                    servers.insert(name.clone(), server);
+                }
+                Err(error) if tolerate_invalid_servers => {
+                    warnings.push(format!("skipping server configuration: {error:#}"));
+                }
+                Err(error) => return Err(error),
+            }
         }
         let extra = object
             .iter()
             .filter(|(key, _)| key.as_str() != "mcpServers")
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        Ok(Self { servers, extra })
+        Ok((Self { servers, extra }, warnings))
+    }
+
+    fn parse_server(path: &Path, name: &str, value: &Value) -> Result<ServerConfig> {
+        let raw: RawServerConfig = serde_json::from_value(value.clone()).map_err(|_| {
+            anyhow!(
+                "{}: invalid definition shape for server '{name}'",
+                path.display()
+            )
+        })?;
+        let server = raw.into_server().map_err(|error| {
+            anyhow!(
+                "{}: invalid definition for server '{name}': {error}",
+                path.display()
+            )
+        })?;
+        server.validate().with_context(|| {
+            format!("{}: invalid definition for server '{name}'", path.display())
+        })?;
+        Ok(server)
     }
 }
 

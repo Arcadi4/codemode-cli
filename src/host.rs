@@ -204,8 +204,13 @@ impl Host {
             None => self.config.servers.keys().cloned().collect(),
         };
         let mut entries = Vec::new();
-        for server in servers {
-            entries.extend(self.catalog_for(kind, &server).await?);
+        for server_name in servers {
+            let catalog = if server.is_some() {
+                self.catalog_for(kind, &server_name).await?
+            } else {
+                self.available_catalog(kind, &server_name).await
+            };
+            entries.extend(catalog);
         }
         entries.sort_by(|left, right| {
             left.name.cmp(&right.name).then_with(|| {
@@ -217,14 +222,29 @@ impl Host {
         if matches!(kind, CatalogKind::Tools | CatalogKind::Prompts) {
             let mut names = HashSet::new();
             for entry in &entries {
-                ensure!(
-                    names.insert(&entry.name),
-                    "namespace collision for {:?}; use --server to select its server",
-                    entry.name
-                );
+                if !names.insert(&entry.name) {
+                    eprintln!(
+                        "cm: ambiguous name {:?}; use --server to select its server",
+                        entry.name
+                    );
+                }
             }
         }
         Ok(entries)
+    }
+
+    async fn available_catalog(&mut self, kind: CatalogKind, server: &str) -> Vec<CatalogEntry> {
+        match self.catalog_for(kind, server).await {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("cm: skipping server {server:?}: {error:#}");
+                self.discoveries.remove(server);
+                if let Some(mut client) = self.clients.remove(server) {
+                    client.close().await;
+                }
+                Vec::new()
+            }
+        }
     }
 
     async fn catalog_for(&mut self, kind: CatalogKind, server: &str) -> Result<Vec<CatalogEntry>> {
@@ -353,13 +373,14 @@ impl Host {
             "unknown namespaced name {name:?}; use <server>_<name> from the list command"
         );
         let mut found = None;
+        let explicit_server = selected.is_some() || candidates.len() == 1;
         for server in candidates {
-            if let Some(entry) = self
-                .catalog_for(kind, &server)
-                .await?
-                .into_iter()
-                .find(|entry| entry.name == name)
-            {
+            let catalog = if explicit_server {
+                self.catalog_for(kind, &server).await?
+            } else {
+                self.available_catalog(kind, &server).await
+            };
+            if let Some(entry) = catalog.into_iter().find(|entry| entry.name == name) {
                 ensure!(
                     found.is_none(),
                     "ambiguous name {name:?}; use --server to select its server"

@@ -338,8 +338,16 @@ pub(crate) fn discover(opts: &LoadOptions, clients: &[Client]) -> Result<Discove
     let mut warnings = Vec::new();
     let home_path = home(opts);
     for spec in specs {
-        if !spec.path.is_file() {
-            continue;
+        match spec.path.try_exists() {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => {
+                warnings.push(format!(
+                    "skipping configuration: cannot access {}: {error}",
+                    spec.path.display()
+                ));
+                continue;
+            }
         }
         match parse_source(&spec, home_path.as_deref()) {
             Ok(parsed_source) => {
@@ -358,7 +366,7 @@ pub(crate) fn discover(opts: &LoadOptions, clients: &[Client]) -> Result<Discove
             .filter(|(spec, _)| spec.client == *client)
             .map(|(spec, source)| (spec, source))
             .collect();
-        let (client_candidates, client_warnings) = finalize_client(*client, opts, &client_sources)?;
+        let (client_candidates, client_warnings) = finalize_client(*client, opts, &client_sources);
         candidates.extend(client_candidates);
         warnings.extend(client_warnings);
     }
@@ -428,31 +436,28 @@ pub(crate) fn discover_override(
         }),
     }
     let mut parsed = Vec::new();
+    let mut warnings = Vec::new();
     let home_path = home(opts);
     for spec in &specs {
         match parse_source(spec, home_path.as_deref()) {
             Ok(source) => parsed.push((spec.clone(), source)),
-            Err(error) => {
-                return Ok(Discovery {
-                    candidates: Vec::new(),
-                    sources: Vec::new(),
-                    warnings: if matches!(path.try_exists(), Ok(false)) {
-                        Vec::new()
-                    } else {
-                        vec![format!("skipping configuration: {error:#}")]
-                    },
-                    expected: vec![path],
-                });
-            }
+            Err(_) if matches!(path.try_exists(), Ok(false)) => {}
+            Err(error) => warnings.push(format!("skipping configuration: {error:#}")),
         }
     }
+    let sources = if parsed.is_empty() {
+        Vec::new()
+    } else {
+        vec![path.clone()]
+    };
     let references: Vec<(&SourceSpec, &ParsedSource)> =
         parsed.iter().map(|(spec, source)| (spec, source)).collect();
-    let (mut candidates, warnings) = finalize_client(client, opts, &references)?;
+    let (mut candidates, mut finalize_warnings) = finalize_client(client, opts, &references);
+    warnings.append(&mut finalize_warnings);
     candidates.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(Discovery {
         candidates,
-        sources: vec![path.clone()],
+        sources,
         warnings,
         expected: vec![path],
     })
@@ -1057,8 +1062,9 @@ fn parse_json_servers_key(
     let object = value
         .as_object()
         .ok_or_else(|| anyhow!("{}: top-level value must be an object", spec.path.display()))?;
-    let (servers, warnings) = select_servers_object(object, key, alternate, &spec.path)?;
-    let drafts = parse_server_entries(spec, servers, home)?;
+    let (servers, mut warnings) = select_servers_object(object, key, alternate, &spec.path)?;
+    let (drafts, entry_warnings) = parse_server_entries(spec, servers, home);
+    warnings.extend(entry_warnings);
     Ok(ParsedSource { drafts, warnings })
 }
 
@@ -1122,11 +1128,8 @@ fn parse_claude_project(spec: &SourceSpec, home: Option<&Path>) -> Result<Parsed
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let drafts = parse_server_entries(spec, &servers, home)?;
-    Ok(ParsedSource {
-        drafts,
-        warnings: Vec::new(),
-    })
+    let (drafts, warnings) = parse_server_entries(spec, &servers, home);
+    Ok(ParsedSource { drafts, warnings })
 }
 
 fn find_project_entry<'a>(
@@ -1177,28 +1180,35 @@ fn parse_opencode(spec: &SourceSpec, home: Option<&Path>) -> Result<ParsedSource
     } else {
         mcp
     };
-    let drafts = parse_server_entries(spec, servers, home)?;
-    Ok(ParsedSource {
-        drafts,
-        warnings: Vec::new(),
-    })
+    let (drafts, warnings) = parse_server_entries(spec, servers, home);
+    Ok(ParsedSource { drafts, warnings })
 }
 
 fn parse_server_entries(
     spec: &SourceSpec,
     servers: &serde_json::Map<String, Value>,
     home: Option<&Path>,
-) -> Result<BTreeMap<String, ServerDraft>> {
+) -> (BTreeMap<String, ServerDraft>, Vec<String>) {
     let mut drafts = BTreeMap::new();
+    let mut warnings = Vec::new();
     for (name, value) in servers {
         if name.trim().is_empty() {
-            bail!("{}: server name cannot be empty", spec.path.display());
+            warnings.push(format!(
+                "{}: skipping server configuration: server name cannot be empty",
+                spec.path.display()
+            ));
+            continue;
         }
-        let draft = parse_json_server(spec, name, value, home)
-            .with_context(|| format!("{}: server '{name}'", spec.path.display()))?;
-        drafts.insert(name.clone(), draft);
+        match parse_json_server(spec, name, value, home)
+            .with_context(|| format!("{}: server '{name}'", spec.path.display()))
+        {
+            Ok(draft) => {
+                drafts.insert(name.clone(), draft);
+            }
+            Err(error) => warnings.push(format!("skipping server configuration: {error:#}")),
+        }
     }
-    Ok(drafts)
+    (drafts, warnings)
 }
 
 #[derive(Deserialize, Default)]
@@ -1509,21 +1519,32 @@ fn parse_codex(spec: &SourceSpec, home: Option<&Path>) -> Result<ParsedSource> {
         });
     };
     let mut drafts = BTreeMap::new();
+    let mut warnings = Vec::new();
     for (name, value) in servers {
         if name.trim().is_empty() {
-            bail!("{}: server name cannot be empty", spec.path.display());
+            warnings.push(format!(
+                "{}: skipping server configuration: server name cannot be empty",
+                spec.path.display()
+            ));
+            continue;
         }
-        let table = value
-            .as_table()
-            .ok_or_else(|| anyhow!("{}: server '{name}' must be a table", spec.path.display()))?;
-        let draft = parse_codex_server(spec, name, table, home)
-            .with_context(|| format!("{}: server '{name}'", spec.path.display()))?;
-        drafts.insert(name.clone(), draft);
+        let Some(table) = value.as_table() else {
+            warnings.push(format!(
+                "{}: skipping server configuration: server '{name}' must be a table",
+                spec.path.display()
+            ));
+            continue;
+        };
+        match parse_codex_server(spec, name, table, home)
+            .with_context(|| format!("{}: server '{name}'", spec.path.display()))
+        {
+            Ok(draft) => {
+                drafts.insert(name.clone(), draft);
+            }
+            Err(error) => warnings.push(format!("skipping server configuration: {error:#}")),
+        }
     }
-    Ok(ParsedSource {
-        drafts,
-        warnings: Vec::new(),
-    })
+    Ok(ParsedSource { drafts, warnings })
 }
 
 fn parse_codex_server(
@@ -1901,11 +1922,19 @@ fn normalize_path(value: &str, context: &ConvertContext<'_>) -> String {
         .into_owned()
 }
 
+fn layer_paths(layers: &[(&SourceSpec, &ServerDraft)]) -> String {
+    layers
+        .iter()
+        .map(|(spec, _)| spec.path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn finalize_client(
     client: Client,
     opts: &LoadOptions,
     sources: &[(&SourceSpec, &ParsedSource)],
-) -> Result<(Vec<Candidate>, Vec<String>)> {
+) -> (Vec<Candidate>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut by_name: BTreeMap<String, Vec<(&SourceSpec, &ServerDraft)>> = BTreeMap::new();
     for (spec, parsed) in sources {
@@ -1918,7 +1947,7 @@ fn finalize_client(
         }
     }
     let mut candidates = Vec::new();
-    for (name, mut layers) in by_name {
+    'servers: for (name, mut layers) in by_name {
         layers.sort_by(|(left, _), (right, _)| {
             left.priority
                 .cmp(&right.priority)
@@ -1931,7 +1960,7 @@ fn finalize_client(
             .into_iter()
             .collect();
         let merge = layers.iter().any(|(spec, _)| spec.merge);
-        let selections: Vec<(ServerDraft, Vec<PathBuf>)> = if merge {
+        let selected = if merge {
             let mut merged: Option<ServerDraft> = None;
             let mut index = 0;
             while index < layers.len() {
@@ -1942,26 +1971,24 @@ fn finalize_client(
                     index += 1;
                 }
                 let first = group[0].1;
-                for (_, draft) in group.iter().skip(1) {
-                    if !first.same_definition(draft, true) {
-                        let details = group
-                            .iter()
-                            .map(|(spec, _)| spec.path.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        bail!(
-                            "conflicting same-precedence definitions for MCP server '{name}' in \
-                             {client_label} configs: {details}",
-                            client_label = client.display_name()
-                        );
-                    }
+                if group
+                    .iter()
+                    .skip(1)
+                    .any(|(_, draft)| !first.same_definition(draft, true))
+                {
+                    warnings.push(format!(
+                        "skipping MCP server '{name}': conflicting same-precedence definitions in {} configs: {}",
+                        client.display_name(),
+                        layer_paths(&group)
+                    ));
+                    continue 'servers;
                 }
                 match merged.as_mut() {
                     Some(current) => current.merge_from((*first).clone()),
                     None => merged = Some((*first).clone()),
                 }
             }
-            vec![(merged.expect("at least one layer"), paths.clone())]
+            merged.expect("at least one layer")
         } else {
             let highest = layers
                 .iter()
@@ -1973,102 +2000,72 @@ fn finalize_client(
                 .filter(|(spec, _)| spec.priority == highest)
                 .map(|(spec, draft)| (*spec, *draft))
                 .collect();
-            let conflicting = top
+            if top
                 .iter()
                 .skip(1)
-                .any(|(_, draft)| !top[0].1.same_definition(draft, true));
-            // Independent profiles can define different credentials for the same name.
-            // Require a caller choice; do not select an arbitrary profile.
-            if conflicting && client == Client::Vscode && highest == 10 {
-                let mut groups: Vec<(ServerDraft, Vec<PathBuf>)> = Vec::new();
-                for (spec, draft) in top {
-                    match groups
-                        .iter_mut()
-                        .find(|(existing, _)| existing.same_definition(draft, true))
-                    {
-                        Some((_, group_paths)) => group_paths.push(spec.path.clone()),
-                        None => groups.push(((*draft).clone(), vec![spec.path.clone()])),
+                .any(|(_, draft)| !top[0].1.same_definition(draft, true))
+            {
+                // Profiles and same-precedence sources are independent; never pick one arbitrarily.
+                warnings.push(format!(
+                    "skipping MCP server '{name}': conflicting same-precedence definitions in {} configs: {}",
+                    client.display_name(),
+                    layer_paths(&top)
+                ));
+                continue 'servers;
+            }
+            let selected = top[0].1;
+            if let Some((higher_path, _)) = top.first() {
+                for (spec, draft) in &layers {
+                    if spec.priority < highest && !selected.same_definition(draft, true) {
+                        warnings.push(format!(
+                            "{}: server '{name}' overridden by higher-precedence {}",
+                            spec.path.display(),
+                            higher_path.path.display()
+                        ));
                     }
                 }
-                for (_, group_paths) in &mut groups {
-                    group_paths.sort();
-                    group_paths.dedup();
-                }
-                groups
-            } else {
-                let selected = top[0].1;
-                for (_, draft) in top.iter().skip(1) {
-                    if !selected.same_definition(draft, true) {
-                        let details = top
-                            .iter()
-                            .map(|(spec, _)| spec.path.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        bail!(
-                            "conflicting same-precedence definitions for MCP server '{name}' in \
-                             {client_label} configs: {details}",
-                            client_label = client.display_name()
-                        );
-                    }
-                }
-                if let Some((higher_path, _)) = top.first() {
-                    for (spec, draft) in &layers {
-                        if spec.priority < highest && !selected.same_definition(draft, true) {
-                            warnings.push(format!(
-                                "{}: server '{name}' overridden by higher-precedence {}",
-                                spec.path.display(),
-                                higher_path.path.display()
-                            ));
-                        }
-                    }
-                }
-                vec![((*selected).clone(), paths.clone())]
+            }
+            (*selected).clone()
+        };
+        for warning in &selected.warnings {
+            warnings.push(format!(
+                "{}: server '{name}': {warning}",
+                paths
+                    .first()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
+            ));
+        }
+        let path = paths.first().cloned().unwrap_or_else(|| opts.cwd.clone());
+        let mut config = match selected.finish(&name, &path) {
+            Ok(config) => config,
+            Err(error) => {
+                warnings.push(format!("skipping server configuration: {error:#}"));
+                continue;
             }
         };
-        for (selected, selected_paths) in selections {
-            for warning in &selected.warnings {
+        if client == Client::Claude {
+            let project = find_upward_file(&opts.cwd, ".mcp.json")
+                .map(|(_, root)| root)
+                .unwrap_or_else(|| opts.cwd.clone());
+            let (disabled_names, mut settings_warnings) = claude_disabled_names(opts, &project);
+            warnings.append(&mut settings_warnings);
+            if disabled_names.contains(&name) {
+                config.disabled = true;
                 warnings.push(format!(
-                    "{}: server '{name}': {warning}",
-                    selected_paths
-                        .first()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_default()
+                    "{}: server '{name}' disabled by Claude settings",
+                    path.display()
                 ));
             }
-            let path = selected_paths
-                .first()
-                .cloned()
-                .unwrap_or_else(|| opts.cwd.clone());
-            let mut config = match selected.finish(&name, &path) {
-                Ok(config) => config,
-                Err(error) => {
-                    warnings.push(format!("skipping server configuration: {error:#}"));
-                    continue;
-                }
-            };
-            if client == Client::Claude {
-                let project = find_upward_file(&opts.cwd, ".mcp.json")
-                    .map(|(_, root)| root)
-                    .unwrap_or_else(|| opts.cwd.clone());
-                let (disabled_names, mut settings_warnings) = claude_disabled_names(opts, &project);
-                warnings.append(&mut settings_warnings);
-                if disabled_names.contains(&name) {
-                    config.disabled = true;
-                    warnings.push(format!(
-                        "{}: server '{name}' disabled by Claude settings",
-                        path.display()
-                    ));
-                }
-            }
-            candidates.push(Candidate {
-                name: name.clone(),
-                config,
-                client,
-                paths: selected_paths,
-            });
         }
+        candidates.push(Candidate {
+            name,
+            config,
+            client,
+            paths,
+        });
     }
-    Ok((candidates, warnings))
+    (candidates, warnings)
 }
 
 fn claude_disabled_names(opts: &LoadOptions, project: &Path) -> (BTreeSet<String>, Vec<String>) {
