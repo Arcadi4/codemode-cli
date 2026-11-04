@@ -332,12 +332,12 @@ pub(crate) fn decrypt_electron_safe_storage(
         &mut key,
     );
 
-    use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
     type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
     let iv = [b' '; 16];
     let mut buffer = ciphertext.to_vec();
     let plaintext = Aes128CbcDec::new((&key).into(), (&iv).into())
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|_| {
             anyhow!("Electron safe-storage decryption failed; the stored safe-storage key does not match")
         })?;
