@@ -35,6 +35,8 @@ cm import codex --path /path/to/config.toml
 
 The global config takes precedence; different same-name definitions from multiple clients require an explicit global choice. Identical definitions are deduplicated. Disabled definitions remain disabled. Conflicting imports fail without changing the global file; `--force` explicitly permits replacement. Source client files are never edited. Global writes are atomic and owner-only.
 
+Named VS Code profiles are discovered alongside the default profile. Different definitions of the same name in independent profiles are not arbitrarily merged: use a global choice or import one profile explicitly with `--path`. An applicable workspace definition overrides profile-level definitions.
+
 `CM_CLIENTS` limits automatic discovery to comma-separated client names; `CM_CLIENTS=none` reads only the global config. `cm servers list` inspects names, transports, and source paths without launching servers or printing credentials. Only trusted configurations should be used: starting a stdio server executes its configured command. Imports do not transfer client-specific tool approvals or permission policies.
 
 Environment/header credentials and supported environment/file references are resolved on demand. Unexpired, endpoint-bound OAuth tokens can be reused from Claude Code, Codex, and OpenCode file stores. Name-only token records are not trusted. Interactive OAuth and executable header helpers are not used; configure static headers/environment credentials when a source cannot expose its token.

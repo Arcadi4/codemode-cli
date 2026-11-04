@@ -286,7 +286,10 @@ impl ServerDraft {
             );
         }
         if !disabled
-            && self.headers.as_ref().is_some_and(|headers| !headers.is_empty())
+            && self
+                .headers
+                .as_ref()
+                .is_some_and(|headers| !headers.is_empty())
             && self.url.is_none()
         {
             bail!(
@@ -351,8 +354,7 @@ pub(crate) fn discover(opts: &LoadOptions, clients: &[Client]) -> Result<Discove
             .filter(|(spec, _)| spec.client == *client)
             .map(|(spec, source)| (spec, source))
             .collect();
-        let (client_candidates, client_warnings) =
-            finalize_client(*client, opts, &client_sources)?;
+        let (client_candidates, client_warnings) = finalize_client(*client, opts, &client_sources)?;
         candidates.extend(client_candidates);
         warnings.extend(client_warnings);
     }
@@ -389,7 +391,9 @@ pub(crate) fn discover_override(
     let (base, workspace) = source_base_for_path(&path, &opts.cwd);
     let mut specs = Vec::new();
     match client {
-        Client::Claude if path.file_name().and_then(|name| name.to_str()) == Some(".claude.json") => {
+        Client::Claude
+            if path.file_name().and_then(|name| name.to_str()) == Some(".claude.json") =>
+        {
             specs.push(SourceSpec {
                 client,
                 path: path.clone(),
@@ -507,6 +511,18 @@ fn client_sources(opts: &LoadOptions, client: Client) -> (Vec<SourceSpec>, Vec<P
                     false,
                 );
             }
+            for path in vscode_profile_configs(opts) {
+                expected.push(path.clone());
+                push_user(
+                    &mut specs,
+                    client,
+                    path,
+                    opts.cwd.clone(),
+                    Parser::VsCode,
+                    Syntax::Vscode,
+                    false,
+                );
+            }
             let expected_path = opts.cwd.join(".vscode").join("mcp.json");
             if let Some((path, root)) = find_upward_file(&opts.cwd, ".vscode/mcp.json") {
                 push_workspace(
@@ -609,7 +625,11 @@ fn client_sources(opts: &LoadOptions, client: Client) -> (Vec<SourceSpec>, Vec<P
                     });
                 }
             }
-            if let Some(custom) = opts.env.get("OPENCODE_CONFIG").filter(|value| !value.is_empty()) {
+            if let Some(custom) = opts
+                .env
+                .get("OPENCODE_CONFIG")
+                .filter(|value| !value.is_empty())
+            {
                 let path = if Path::new(custom).is_absolute() {
                     PathBuf::from(custom)
                 } else {
@@ -850,34 +870,51 @@ fn appdata(opts: &LoadOptions) -> Option<PathBuf> {
 }
 
 fn vscode_user_config(opts: &LoadOptions) -> Option<PathBuf> {
+    Some(vscode_user_dir(opts)?.join("mcp.json"))
+}
+
+/// VS Code stores per-profile user configuration under `<User>/profiles/<id>`,
+/// including `mcp.json` for profiles that do not inherit MCP configuration from
+/// the default profile.
+fn vscode_user_dir(opts: &LoadOptions) -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         Some(
             home(opts)?
                 .join("Library")
                 .join("Application Support")
                 .join("Code")
-                .join("User")
-                .join("mcp.json"),
+                .join("User"),
         )
     } else if cfg!(windows) {
-        Some(
-            appdata(opts)?
-                .join("Code")
-                .join("User")
-                .join("mcp.json"),
-        )
+        Some(appdata(opts)?.join("Code").join("User"))
     } else {
-        Some(
-            xdg_config(opts)?
-                .join("Code")
-                .join("User")
-                .join("mcp.json"),
-        )
+        Some(xdg_config(opts)?.join("Code").join("User"))
     }
 }
 
+fn vscode_profile_configs(opts: &LoadOptions) -> Vec<PathBuf> {
+    let Some(profiles) = vscode_user_dir(opts).map(|dir| dir.join("profiles")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(profiles) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path().join("mcp.json"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
 fn copilot_config(opts: &LoadOptions) -> Option<PathBuf> {
-    if let Some(home) = opts.env.get("COPILOT_HOME").filter(|value| !value.is_empty()) {
+    if let Some(home) = opts
+        .env
+        .get("COPILOT_HOME")
+        .filter(|value| !value.is_empty())
+    {
         return Some(PathBuf::from(home).join("mcp-config.json"));
     }
     Some(home(opts)?.join(".copilot").join("mcp-config.json"))
@@ -985,8 +1022,8 @@ fn read_source(path: &Path) -> Result<String> {
             MAX_SOURCE_BYTES / (1024 * 1024)
         );
     }
-    let mut text =
-        fs::read_to_string(path).with_context(|| format!("{} is not valid UTF-8", path.display()))?;
+    let mut text = fs::read_to_string(path)
+        .with_context(|| format!("{} is not valid UTF-8", path.display()))?;
     if text.starts_with('\u{feff}') {
         text.remove(0);
     }
@@ -1121,14 +1158,9 @@ fn parse_opencode(spec: &SourceSpec, home: Option<&Path>) -> Result<ParsedSource
         });
     };
     let servers = if let Some(nested) = mcp.get("servers").and_then(Value::as_object) {
-        let mcp_looks_like_servers = mcp
-            .values()
-            .filter_map(Value::as_object)
-            .any(|entry| {
-                entry.contains_key("type")
-                    || entry.contains_key("command")
-                    || entry.contains_key("url")
-            });
+        let mcp_looks_like_servers = mcp.values().filter_map(Value::as_object).any(|entry| {
+            entry.contains_key("type") || entry.contains_key("command") || entry.contains_key("url")
+        });
         if mcp_looks_like_servers { mcp } else { nested }
     } else {
         mcp
@@ -1219,8 +1251,8 @@ fn parse_json_server(
     value: &Value,
     home: Option<&Path>,
 ) -> Result<ServerDraft> {
-    let raw: JsonDraft = serde_json::from_value(value.clone())
-        .map_err(|_| anyhow!("invalid server entry shape"))?;
+    let raw: JsonDraft =
+        serde_json::from_value(value.clone()).map_err(|_| anyhow!("invalid server entry shape"))?;
     let mut draft = ServerDraft::default();
     let context = ConvertContext {
         base: &spec.base,
@@ -1350,13 +1382,9 @@ fn parse_json_server(
         let value = convert_text(&env_file, spec.syntax, &context, name, "envFile")?;
         draft.env_file = Some(normalize_cwd(&value, &context));
     }
-    draft.bearer_token_env_var = raw
-        .bearer_token_env_var
-        .filter(|value| !value.is_empty());
+    draft.bearer_token_env_var = raw.bearer_token_env_var.filter(|value| !value.is_empty());
     draft.timeout_ms = raw.timeout_ms.or(raw.timeout);
-    draft.disabled = raw
-        .disabled
-        .or_else(|| raw.enabled.map(|enabled| !enabled));
+    draft.disabled = raw.disabled.or_else(|| raw.enabled.map(|enabled| !enabled));
     let kind_value = match (raw.kind.as_deref(), raw.transport.as_deref()) {
         (Some(left), Some(right)) if !left.eq_ignore_ascii_case(right) => {
             bail!("'type' and 'transport' disagree")
@@ -1388,9 +1416,8 @@ fn parse_json_server(
     if let Some(headers) = draft.headers.as_mut() {
         if draft.bearer_token_env_var.is_some() && contains_header(headers, "authorization") {
             headers.retain(|key, _| !key.eq_ignore_ascii_case("authorization"));
-            draft.warn(
-                "Authorization header removed because bearer_token_env_var takes precedence",
-            );
+            draft
+                .warn("Authorization header removed because bearer_token_env_var takes precedence");
         }
     }
     if raw.headers_helper.is_some() || raw.http_headers_helper.is_some() {
@@ -1402,7 +1429,12 @@ fn parse_json_server(
         Client::Cursor if raw.auth.is_some() => draft.warn(
             "static OAuth configuration is not executed by cm; configure an Authorization header",
         ),
-        Client::Opencode if raw.oauth.as_ref().is_some_and(|oauth| !oauth.is_boolean() || oauth.as_bool() == Some(true)) => {
+        Client::Opencode
+            if raw
+                .oauth
+                .as_ref()
+                .is_some_and(|oauth| !oauth.is_boolean() || oauth.as_bool() == Some(true)) =>
+        {
             draft.warn(
                 "OAuth authorization flow is not performed by cm; an existing unexpired token is reused if available",
             );
@@ -1453,8 +1485,8 @@ fn value_to_string(value: Value, field: &str) -> Result<String> {
 
 fn parse_codex(spec: &SourceSpec, home: Option<&Path>) -> Result<ParsedSource> {
     let text = read_source(&spec.path)?;
-    let value: toml::Value = toml::from_str(&text)
-        .map_err(|_| anyhow!("{}: invalid TOML", spec.path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&text).map_err(|_| anyhow!("{}: invalid TOML", spec.path.display()))?;
     let table = value
         .as_table()
         .ok_or_else(|| anyhow!("{}: top-level value must be a table", spec.path.display()))?;
@@ -1503,8 +1535,8 @@ fn parse_codex_server(
     if let Some(args) = table.get("args").and_then(toml::Value::as_array) {
         let mut values = Vec::new();
         for (index, value) in args.iter().enumerate() {
-            let value = toml_string(value)
-                .ok_or_else(|| anyhow!("'args[{index}]' must be a string"))?;
+            let value =
+                toml_string(value).ok_or_else(|| anyhow!("'args[{index}]' must be a string"))?;
             values.push(convert_text(
                 value,
                 Syntax::Literal,
@@ -1518,8 +1550,8 @@ fn parse_codex_server(
     if let Some(env) = table.get("env").and_then(toml::Value::as_table) {
         let mut values = BTreeMap::new();
         for (key, value) in env {
-            let value = toml_string(value)
-                .ok_or_else(|| anyhow!("'env.{key}' must be a string"))?;
+            let value =
+                toml_string(value).ok_or_else(|| anyhow!("'env.{key}' must be a string"))?;
             values.insert(
                 key.clone(),
                 convert_text(
@@ -1652,7 +1684,9 @@ fn convert_text(
         Syntax::Literal => Ok(escape_literal(value)),
         Syntax::Opencode => convert_opencode_refs(value, context, server, field),
         Syntax::Vscode => convert_vscode_refs(value, context, server, field),
-        Syntax::Portable => convert_dollar_refs(value, DollarMode::Portable, context, server, field),
+        Syntax::Portable => {
+            convert_dollar_refs(value, DollarMode::Portable, context, server, field)
+        }
         Syntax::Claude => convert_dollar_refs(value, DollarMode::Claude, context, server, field),
         Syntax::Devin => convert_dollar_refs(value, DollarMode::Devin, context, server, field),
     }
@@ -1885,7 +1919,7 @@ fn finalize_client(
             .into_iter()
             .collect();
         let merge = layers.iter().any(|(spec, _)| spec.merge);
-        let selected = if merge {
+        let selections: Vec<(ServerDraft, Vec<PathBuf>)> = if merge {
             let mut merged: Option<ServerDraft> = None;
             let mut index = 0;
             while index < layers.len() {
@@ -1915,7 +1949,7 @@ fn finalize_client(
                     None => merged = Some((*first).clone()),
                 }
             }
-            merged.expect("at least one layer")
+            vec![(merged.expect("at least one layer"), paths.clone())]
         } else {
             let highest = layers
                 .iter()
@@ -1927,71 +1961,101 @@ fn finalize_client(
                 .filter(|(spec, _)| spec.priority == highest)
                 .map(|(spec, draft)| (*spec, *draft))
                 .collect();
-            let selected = top[0].1;
-            for (_, draft) in top.iter().skip(1) {
-                if !selected.same_definition(draft, true) {
-                    let details = top
-                        .iter()
-                        .map(|(spec, _)| spec.path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    bail!(
-                        "conflicting same-precedence definitions for MCP server '{name}' in \
-                         {client_label} configs: {details}",
-                        client_label = client.display_name()
-                    );
-                }
-            }
-            if let Some((higher_path, _)) = top.first() {
-                for (spec, draft) in &layers {
-                    if spec.priority < highest && !selected.same_definition(draft, true) {
-                        warnings.push(format!(
-                            "{}: server '{name}' overridden by higher-precedence {}",
-                            spec.path.display(),
-                            higher_path.path.display()
-                        ));
+            let conflicting = top
+                .iter()
+                .skip(1)
+                .any(|(_, draft)| !top[0].1.same_definition(draft, true));
+            // VS Code's default user configuration and named profile configurations
+            // are independent origins: only one profile is active at a time. Keep
+            // divergent same-name definitions as separate candidates so callers can
+            // report the conflict instead of selecting an arbitrary profile.
+            if conflicting && client == Client::Vscode && highest == 10 {
+                let mut groups: Vec<(ServerDraft, Vec<PathBuf>)> = Vec::new();
+                for (spec, draft) in top {
+                    match groups
+                        .iter_mut()
+                        .find(|(existing, _)| existing.same_definition(draft, true))
+                    {
+                        Some((_, group_paths)) => group_paths.push(spec.path.clone()),
+                        None => groups.push(((*draft).clone(), vec![spec.path.clone()])),
                     }
                 }
+                for (_, group_paths) in &mut groups {
+                    group_paths.sort();
+                    group_paths.dedup();
+                }
+                groups
+            } else {
+                let selected = top[0].1;
+                for (_, draft) in top.iter().skip(1) {
+                    if !selected.same_definition(draft, true) {
+                        let details = top
+                            .iter()
+                            .map(|(spec, _)| spec.path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        bail!(
+                            "conflicting same-precedence definitions for MCP server '{name}' in \
+                             {client_label} configs: {details}",
+                            client_label = client.display_name()
+                        );
+                    }
+                }
+                if let Some((higher_path, _)) = top.first() {
+                    for (spec, draft) in &layers {
+                        if spec.priority < highest && !selected.same_definition(draft, true) {
+                            warnings.push(format!(
+                                "{}: server '{name}' overridden by higher-precedence {}",
+                                spec.path.display(),
+                                higher_path.path.display()
+                            ));
+                        }
+                    }
+                }
+                vec![((*selected).clone(), paths.clone())]
             }
-            (*selected).clone()
         };
-        for warning in &selected.warnings {
-            warnings.push(format!(
-                "{}: server '{name}': {warning}",
-                paths.first().map(|path| path.display().to_string()).unwrap_or_default()
-            ));
-        }
-        let path = paths.first().cloned().unwrap_or_else(|| opts.cwd.clone());
-        let mut config = selected.finish(&name, &path)?;
-        if client == Client::Claude {
-            let project = find_upward_file(&opts.cwd, ".mcp.json")
-                .map(|(_, root)| root)
-                .unwrap_or_else(|| opts.cwd.clone());
-            let (disabled_names, mut settings_warnings) =
-                claude_disabled_names(opts, &project);
-            warnings.append(&mut settings_warnings);
-            if disabled_names.contains(&name) {
-                config.disabled = true;
+        for (selected, selected_paths) in selections {
+            for warning in &selected.warnings {
                 warnings.push(format!(
-                    "{}: server '{name}' disabled by Claude settings",
-                    path.display()
+                    "{}: server '{name}': {warning}",
+                    selected_paths
+                        .first()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default()
                 ));
             }
+            let path = selected_paths
+                .first()
+                .cloned()
+                .unwrap_or_else(|| opts.cwd.clone());
+            let mut config = selected.finish(&name, &path)?;
+            if client == Client::Claude {
+                let project = find_upward_file(&opts.cwd, ".mcp.json")
+                    .map(|(_, root)| root)
+                    .unwrap_or_else(|| opts.cwd.clone());
+                let (disabled_names, mut settings_warnings) = claude_disabled_names(opts, &project);
+                warnings.append(&mut settings_warnings);
+                if disabled_names.contains(&name) {
+                    config.disabled = true;
+                    warnings.push(format!(
+                        "{}: server '{name}' disabled by Claude settings",
+                        path.display()
+                    ));
+                }
+            }
+            candidates.push(Candidate {
+                name: name.clone(),
+                config,
+                client,
+                paths: selected_paths,
+            });
         }
-        candidates.push(Candidate {
-            name,
-            config,
-            client,
-            paths,
-        });
     }
     Ok((candidates, warnings))
 }
 
-fn claude_disabled_names(
-    opts: &LoadOptions,
-    project: &Path,
-) -> (BTreeSet<String>, Vec<String>) {
+fn claude_disabled_names(opts: &LoadOptions, project: &Path) -> (BTreeSet<String>, Vec<String>) {
     let mut names = BTreeSet::new();
     let mut warnings = Vec::new();
     let mut paths = Vec::new();
