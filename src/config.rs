@@ -708,7 +708,9 @@ impl Config {
         let mut global = match GlobalFile::read(&global_path) {
             Ok(global) => global,
             Err(error) => {
-                warnings.push(format!("skipping configuration: {error:#}"));
+                if !matches!(global_path.try_exists(), Ok(false)) {
+                    warnings.push(format!("skipping configuration: {error:#}"));
+                }
                 GlobalFile {
                     servers: BTreeMap::new(),
                     extra: BTreeMap::new(),
@@ -905,17 +907,19 @@ impl Config {
         };
 
         if discovery.sources.is_empty() {
-            if clients.len() == 1 && report.warnings.is_empty() {
-                let checked = if discovery.expected.is_empty() {
-                    "no known configuration paths (home directory is not set)".to_string()
-                } else {
-                    discovery
-                        .expected
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
+            if clients.len() == 1
+                && report.warnings.is_empty()
+                && discovery
+                    .expected
+                    .iter()
+                    .any(|path| !matches!(path.try_exists(), Ok(false)))
+            {
+                let checked = discovery
+                    .expected
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 report.warnings.push(format!(
                     "no {} configuration found (checked: {checked})",
                     clients[0].display_name()
@@ -931,9 +935,11 @@ impl Config {
         let mut global = match GlobalFile::read(&config_path) {
             Ok(global) => global,
             Err(error) => {
-                report.warnings.push(format!(
-                    "skipping import; destination configuration is invalid: {error:#}"
-                ));
+                if !matches!(config_path.try_exists(), Ok(false)) {
+                    report.warnings.push(format!(
+                        "skipping import; destination configuration is invalid: {error:#}"
+                    ));
+                }
                 return Ok(report);
             }
         };

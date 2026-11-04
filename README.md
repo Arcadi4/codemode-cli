@@ -35,7 +35,7 @@ cm import codex --path /path/to/config.toml
 
 The global config takes precedence; different same-name definitions from multiple clients require an explicit global choice. Identical definitions are deduplicated. Disabled definitions remain disabled. Conflicting imports fail without changing the global file; `--force` explicitly permits replacement. Source client files are never edited. Global writes are atomic and owner-only.
 
-Missing configuration files are skipped. Invalid or unreadable files produce stderr warnings without blocking valid sources. Imports with no usable source are no-ops; an invalid global destination is left unchanged, including with `--force`.
+Missing configuration files are skipped silently, including explicit import paths. Invalid or unreadable files produce stderr warnings without blocking valid sources. Imports with no usable source are no-ops; an invalid global destination is left unchanged, including with `--force`.
 
 Named VS Code profiles are discovered alongside the default profile. Different definitions of the same name in independent profiles are not arbitrarily merged: use a global choice or import one profile explicitly with `--path`. An applicable workspace definition overrides profile-level definitions.
 

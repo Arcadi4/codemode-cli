@@ -346,6 +346,7 @@ pub(crate) fn discover(opts: &LoadOptions, clients: &[Client]) -> Result<Discove
                 sources.insert(spec.path.clone());
                 parsed.push((spec, parsed_source));
             }
+            Err(_) if matches!(spec.path.try_exists(), Ok(false)) => {}
             Err(error) => warnings.push(format!("skipping configuration: {error:#}")),
         }
     }
@@ -435,7 +436,11 @@ pub(crate) fn discover_override(
                 return Ok(Discovery {
                     candidates: Vec::new(),
                     sources: Vec::new(),
-                    warnings: vec![format!("skipping configuration: {error:#}")],
+                    warnings: if matches!(path.try_exists(), Ok(false)) {
+                        Vec::new()
+                    } else {
+                        vec![format!("skipping configuration: {error:#}")]
+                    },
                     expected: vec![path],
                 });
             }
