@@ -118,3 +118,32 @@ fn import_all_skips_bad_sources_without_overwriting_invalid_destination() {
     assert_eq!(report["added"], json!([]));
     assert_eq!(fs::read_to_string(workspace.global()).unwrap(), "{broken");
 }
+
+#[test]
+fn absent_configurations_are_silent_but_existing_invalid_files_warn() {
+    let workspace = Workspace::new();
+    let missing = "Library/Application Support/Code/User/mcp.json";
+    for arguments in [
+        vec!["servers", "list"],
+        vec!["import", "vscode"],
+        vec!["import", "vscode", "--path", missing],
+    ] {
+        let output = workspace.run(&arguments);
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = successful_json(output);
+        if arguments[0] == "servers" {
+            assert_eq!(result, json!([]));
+        } else {
+            assert_eq!(result["added"], json!([]));
+        }
+    }
+    workspace.write(missing, "{invalid");
+    let output = workspace.run(&["import", "vscode", "--path", missing]);
+    assert!(!output.stderr.is_empty());
+    assert_eq!(successful_json(output)["added"], json!([]));
+    assert!(!workspace.global().exists());
+}
