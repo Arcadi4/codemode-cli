@@ -365,6 +365,23 @@ fn handle_request(mut request: Request, records: &Mutex<Vec<Record>>) {
         );
         return;
     }
+    if authorization == "Bearer native-collision" && method == "tools/list" {
+        reply(
+            request,
+            200,
+            "application/json",
+            result_body(
+                id,
+                json!({
+                    "tools": [
+                        tool("echo", "Native scoped echo", json!({"type":"object"}), None),
+                        tool("scope_echo", "Native name that collides with a qualified name", json!({"type":"object"}), None)
+                    ]
+                }),
+            ),
+        );
+        return;
+    }
 
     match method.as_str() {
         "server/discover" => {
@@ -956,6 +973,90 @@ fn invalid_arguments_legacy_protocols_and_requested_input_are_rejected() {
 }
 
 #[test]
+fn prompts_resources_and_completion_are_usable_end_to_end() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.configure(&fixture.endpoint, "token-one");
+
+    let prompts = workspace.run_json(&["prompts", "list"]);
+    let prompt_names: Vec<_> = prompts
+        .as_array()
+        .expect("prompts list is an array")
+        .iter()
+        .map(|prompt| prompt["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(prompt_names, vec!["fixture_greet"]);
+
+    let schema = workspace.run_json(&["prompts", "schema", "fixture_greet"]);
+    assert_eq!(schema["name"], "fixture_greet");
+    assert_eq!(schema["arguments"][0]["name"], "name");
+    assert_eq!(schema["arguments"][0]["required"].as_bool(), Some(true));
+
+    assert_eq!(
+        workspace.run_ok(&["prompts", "get", "fixture_greet", r#"{"name":"Ada"}"#]),
+        "user:\nHello, Ada!\n"
+    );
+
+    let prompt_completion =
+        workspace.run_json(&["prompts", "complete", "fixture_greet", "name", "A"]);
+    assert_eq!(prompt_completion["values"], json!(["Ada", "Alicia"]));
+
+    let resources_value = workspace.run_json(&["resources", "list"]);
+    let resources = resources_value
+        .as_array()
+        .expect("resources list is an array");
+    assert_eq!(
+        resources.len(),
+        2,
+        "resources with the same display name but different URIs must both be listed"
+    );
+    let note = resources
+        .iter()
+        .find(|resource| resource["uri"] == "fixture://note")
+        .expect("fixture://note is listed");
+    assert_eq!(note["name"], "fixture_note");
+    assert_eq!(note["mimeType"], "text/plain");
+    let other = resources
+        .iter()
+        .find(|resource| resource["uri"] == "fixture://other-note")
+        .expect("fixture://other-note is listed");
+    assert_eq!(other["name"], "fixture_note");
+    assert_eq!(other["uri"], "fixture://other-note");
+
+    let templates = workspace.run_json(&["resources", "templates"]);
+    assert_eq!(templates[0]["name"], "fixture_note_template");
+    assert_eq!(templates[0]["uriTemplate"], "fixture://note/{slug}");
+
+    assert_eq!(
+        workspace.run_ok(&["resources", "read", "fixture://note", "--server", "fixture"]),
+        "Note body\n"
+    );
+
+    let resource_schema = workspace.run_json(&[
+        "resources",
+        "schema",
+        "fixture://note",
+        "--server",
+        "fixture",
+    ]);
+    assert_eq!(resource_schema["uri"], "fixture://note");
+    assert_eq!(resource_schema["mimeType"], "text/plain");
+
+    let resource_completion = workspace.run_json(&[
+        "resources",
+        "complete",
+        "fixture://note/{slug}",
+        "slug",
+        "a",
+        "--server",
+        "fixture",
+    ]);
+    assert_eq!(resource_completion["values"], json!(["alpha", "amber"]));
+
+    fixture.assert_modern_protocol_only();
+}
+
+#[test]
 fn aggregate_catalogs_isolate_failures_but_explicit_servers_fail() {
     let fixture = Fixture::start();
     let workspace = Workspace::new();
@@ -1074,4 +1175,207 @@ fn aggregate_namespace_collisions_remain_visible_for_explicit_disambiguation() {
     ambiguous.assert_stdout_empty();
     let schema = workspace.run_json(&["--server", "group", "tools", "schema", "group_live_echo"]);
     assert_eq!(schema["inputSchema"], json!({"type":"object"}));
+}
+
+#[test]
+fn scoped_lookups_accept_native_and_qualified_names_without_contacting_others() {
+    let fixture = Fixture::start();
+    let unrelated = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "fixture": {
+            "url": fixture.endpoint.clone(),
+            "headers": {"Authorization": "Bearer token-one"}
+        },
+        "unrelated": {
+            "url": unrelated.endpoint.clone(),
+            "headers": {"Authorization": "Bearer legacy"}
+        }
+    }));
+
+    for name in ["echo", "fixture_echo"] {
+        assert_eq!(
+            workspace.run_ok(&[
+                "--server",
+                "fixture",
+                "tools",
+                "call",
+                name,
+                r#"{"text":"scoped"}"#,
+            ]),
+            "echo:scoped\n",
+            "native and qualified names must both resolve under --server"
+        );
+        assert_eq!(
+            workspace.run_ok(&[
+                "tools",
+                "call",
+                name,
+                r#"{"text":"scoped"}"#,
+                "--server",
+                "fixture",
+            ]),
+            "echo:scoped\n",
+            "--server must also be accepted after the command"
+        );
+    }
+    assert_eq!(fixture.calls_to("tools/call", "echo"), 4);
+
+    let native_schema =
+        workspace.run_json(&["--server", "fixture", "tools", "schema", "structured"]);
+    let qualified_schema = workspace.run_json(&[
+        "--server",
+        "fixture",
+        "tools",
+        "schema",
+        "fixture_structured",
+    ]);
+    assert_eq!(native_schema, qualified_schema);
+
+    for prompt in ["greet", "fixture_greet"] {
+        assert_eq!(
+            workspace.run_ok(&[
+                "--server",
+                "fixture",
+                "prompts",
+                "get",
+                prompt,
+                r#"{"name":"Ada"}"#,
+            ]),
+            "user:\nHello, Ada!\n"
+        );
+        assert_eq!(
+            workspace.run_ok(&[
+                "prompts",
+                "get",
+                prompt,
+                r#"{"name":"Ada"}"#,
+                "--server",
+                "fixture",
+            ]),
+            "user:\nHello, Ada!\n"
+        );
+    }
+
+    assert_eq!(
+        workspace.run_ok(&["--server", "fixture", "resources", "read", "fixture://note"]),
+        "Note body\n"
+    );
+    assert_eq!(
+        workspace.run_ok(&["resources", "read", "fixture://note", "--server", "fixture"]),
+        "Note body\n"
+    );
+    let server = workspace.run_json(&["servers", "discover", "--server", "fixture"]);
+    assert_eq!(server["serverInfo"]["name"], "fixture");
+
+    assert_eq!(
+        unrelated.request_count(),
+        0,
+        "explicit scoping must not contact unrelated servers"
+    );
+}
+
+#[test]
+fn unknown_selected_server_is_rejected_before_dispatch() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.configure(&fixture.endpoint, "token-one");
+
+    let run = workspace.run(&[
+        "--server",
+        "absent",
+        "tools",
+        "call",
+        "fixture_echo",
+        r#"{"text":"x"}"#,
+    ]);
+    run.assert_failed();
+    run.assert_stdout_empty();
+    assert_eq!(
+        fixture.request_count(),
+        0,
+        "an unknown selected server must not contact configured servers"
+    );
+}
+
+#[test]
+fn scoped_lookup_rejects_native_and_qualified_collisions() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "scope": {
+            "url": fixture.endpoint.clone(),
+            "headers": {"Authorization": "Bearer native-collision"}
+        }
+    }));
+
+    let run = workspace.run(&["--server", "scope", "tools", "call", "scope_echo", "{}"]);
+    run.assert_failed();
+    run.assert_stdout_empty();
+    assert_eq!(
+        fixture.calls_to("tools/call", "echo"),
+        0,
+        "an ambiguous name must not invoke a qualified tool"
+    );
+    assert_eq!(
+        fixture.calls_to("tools/call", "scope_echo"),
+        0,
+        "an ambiguous name must not invoke a native tool"
+    );
+}
+
+#[test]
+fn targeted_commands_require_server_before_dispatch() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.configure(&fixture.endpoint, "token-one");
+
+    for arguments in [
+        vec!["resources", "read", "fixture://note"],
+        vec!["resources", "schema", "fixture://note"],
+        vec!["resources", "discover", "fixture://note"],
+        vec![
+            "resources",
+            "complete",
+            "fixture://note/{slug}",
+            "slug",
+            "a",
+        ],
+        vec!["servers", "discover"],
+        vec!["tasks", "get", "task-media"],
+        vec!["tasks", "cancel", "task-cancel"],
+    ] {
+        let run = workspace.run(&arguments);
+        assert_eq!(
+            run.code,
+            Some(2),
+            "cm {arguments:?} must be a usage error\nstdout:\n{}\nstderr:\n{}",
+            run.stdout,
+            run.stderr
+        );
+        run.assert_stdout_empty();
+    }
+    assert_eq!(
+        fixture.request_count(),
+        0,
+        "a missing --server must not dispatch"
+    );
+}
+
+#[test]
+fn servers_list_targets_disabled_configuration_without_launching() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "paused": {"url": fixture.endpoint.clone(), "disabled": true}
+    }));
+
+    let summary = workspace.run_json(&["servers", "list", "--server", "paused"]);
+    assert_eq!(summary[0]["name"], "paused");
+    assert_eq!(summary[0]["disabled"], true);
+    assert_eq!(
+        fixture.request_count(),
+        0,
+        "listing a disabled server must not launch it"
+    );
 }
