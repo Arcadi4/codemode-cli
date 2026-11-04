@@ -11,7 +11,6 @@ use crate::config::{self, LoadOptions, ServerConfig};
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SECRET_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Supported MCP clients whose configuration can be discovered and imported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Client {
@@ -873,9 +872,6 @@ fn vscode_user_config(opts: &LoadOptions) -> Option<PathBuf> {
     Some(vscode_user_dir(opts)?.join("mcp.json"))
 }
 
-/// VS Code stores per-profile user configuration under `<User>/profiles/<id>`,
-/// including `mcp.json` for profiles that do not inherit MCP configuration from
-/// the default profile.
 fn vscode_user_dir(opts: &LoadOptions) -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         Some(
@@ -1062,19 +1058,19 @@ fn select_servers_object<'a>(
             None => bail!("{}: '{key}' must be an object", path.display()),
         };
     }
-    if let Some(alternate) = alternate {
-        if let Some(value) = object.get(alternate) {
-            let servers = value
-                .as_object()
-                .ok_or_else(|| anyhow!("{}: '{alternate}' must be an object", path.display()))?;
-            return Ok((
-                servers,
-                vec![format!(
-                    "{}: using '{alternate}' instead of expected '{key}'",
-                    path.display()
-                )],
-            ));
-        }
+    if let Some(alternate) = alternate
+        && let Some(value) = object.get(alternate)
+    {
+        let servers = value
+            .as_object()
+            .ok_or_else(|| anyhow!("{}: '{alternate}' must be an object", path.display()))?;
+        return Ok((
+            servers,
+            vec![format!(
+                "{}: using '{alternate}' instead of expected '{key}'",
+                path.display()
+            )],
+        ));
     }
     Ok((&*EMPTY_OBJECT, Vec::new()))
 }
@@ -1136,10 +1132,10 @@ fn find_project_entry<'a>(
         if key_path == project {
             return Some(entry);
         }
-        if let (Some(canonical), Ok(key_canonical)) = (&canonical, fs::canonicalize(key_path)) {
-            if *canonical == key_canonical {
-                return Some(entry);
-            }
+        if let (Some(canonical), Ok(key_canonical)) = (&canonical, fs::canonicalize(key_path))
+            && *canonical == key_canonical
+        {
+            return Some(entry);
         }
     }
     None
@@ -1413,12 +1409,12 @@ fn parse_json_server(
     {
         bail!("'bearerTokenEnvVar' requires a remote HTTP server");
     }
-    if let Some(headers) = draft.headers.as_mut() {
-        if draft.bearer_token_env_var.is_some() && contains_header(headers, "authorization") {
-            headers.retain(|key, _| !key.eq_ignore_ascii_case("authorization"));
-            draft
-                .warn("Authorization header removed because bearer_token_env_var takes precedence");
-        }
+    if let Some(headers) = draft.headers.as_mut()
+        && draft.bearer_token_env_var.is_some()
+        && contains_header(headers, "authorization")
+    {
+        headers.retain(|key, _| !key.eq_ignore_ascii_case("authorization"));
+        draft.warn("Authorization header removed because bearer_token_env_var takes precedence");
     }
     if raw.headers_helper.is_some() || raw.http_headers_helper.is_some() {
         draft.warn(
@@ -1722,9 +1718,9 @@ fn convert_dollar_refs(
                  export an environment variable and reference it instead"
             );
         }
-        if inner.starts_with("file:") {
+        if let Some(file) = inner.strip_prefix("file:") {
             if matches!(mode, DollarMode::Devin) {
-                let path = read_substitution_file(&inner[5..], context)?;
+                let path = read_substitution_file(file, context)?;
                 output.push_str(&escape_literal(&path));
             } else {
                 bail!(
@@ -1784,7 +1780,7 @@ fn convert_vscode_refs(
             })?;
             output.push_str(&escape_literal(&home.to_string_lossy()));
         } else if inner == "pathSeparator" || inner == "/" {
-            output.push_str(&escape_literal(&std::path::MAIN_SEPARATOR.to_string()));
+            output.push_str(&escape_literal(std::path::MAIN_SEPARATOR_STR));
         } else if inner.starts_with("workspaceFolder:") {
             bail!(
                 "server '{server}': multi-root workspace variable in {field} is unsupported; \
@@ -1965,10 +1961,8 @@ fn finalize_client(
                 .iter()
                 .skip(1)
                 .any(|(_, draft)| !top[0].1.same_definition(draft, true));
-            // VS Code's default user configuration and named profile configurations
-            // are independent origins: only one profile is active at a time. Keep
-            // divergent same-name definitions as separate candidates so callers can
-            // report the conflict instead of selecting an arbitrary profile.
+            // Independent profiles can define different credentials for the same name.
+            // Require a caller choice; do not select an arbitrary profile.
             if conflicting && client == Client::Vscode && highest == 10 {
                 let mut groups: Vec<(ServerDraft, Vec<PathBuf>)> = Vec::new();
                 for (spec, draft) in top {

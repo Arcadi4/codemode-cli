@@ -58,8 +58,7 @@ fn bounds(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
     Ok(())
 }
 
-// rmcp owns transport framing and SSE parsing, but its SEP-2243 projection helpers
-// are crate-private. This small projection also works when discovery came from disk.
+// The SDK header-projection helpers are private. Cached schemas also need this validation.
 pub fn validate_annotations(schema: &Value) -> Result<()> {
     let mut seen = HashSet::new();
     annotations(schema, false, true, &mut seen)

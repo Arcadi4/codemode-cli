@@ -228,12 +228,11 @@ impl Connection {
         if let Self::Stdio {
             input: Some(input), ..
         } = self
-        {
-            if let Ok(message) = serde_json::from_value(
+            && let Ok(message) = serde_json::from_value(
                 json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}}),
-            ) {
-                let _ = tokio::time::timeout(Duration::from_millis(200), input.send(message)).await;
-            }
+            )
+        {
+            let _ = tokio::time::timeout(Duration::from_millis(200), input.send(message)).await;
         }
         // On HTTP, dropping the request/response future closes the stream, which
         // is the protocol's cancellation signal. Never POST a cancellation.

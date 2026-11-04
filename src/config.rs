@@ -26,7 +26,6 @@ pub enum TransportKind {
     Http,
 }
 
-/// Normalized MCP server definition used by the global `mcpServers` file.
 #[derive(Clone, PartialEq, Serialize)]
 pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,7 +101,6 @@ impl ServerConfig {
         Ok(())
     }
 
-
     pub(crate) fn same_definition(&self, other: &Self, include_disabled: bool) -> bool {
         self.command == other.command
             && self.args == other.args
@@ -162,13 +160,7 @@ impl ServerConfig {
             .command
             .as_deref()
             .ok_or_else(|| anyhow!("server '{name}' has no command"))?;
-        let command = render(
-            command,
-            &opts.env,
-            &opts.cwd,
-            name,
-            "command",
-        )?;
+        let command = render(command, &opts.env, &opts.cwd, name, "command")?;
         if command.trim().is_empty() {
             bail!("server '{name}': command is empty after environment substitution");
         }
@@ -181,7 +173,9 @@ impl ServerConfig {
         };
         let command = if looks_like_path(&command) && !Path::new(&command).is_absolute() {
             let base = effective_cwd.as_deref().unwrap_or(&opts.cwd);
-            base.join(expand_tilde(&command, &opts.env)).to_string_lossy().into_owned()
+            base.join(expand_tilde(&command, &opts.env))
+                .to_string_lossy()
+                .into_owned()
         } else {
             command
         };
@@ -190,8 +184,12 @@ impl ServerConfig {
         if let Some(env_file) = self.env_file.as_deref() {
             let env_path = render(env_file, &opts.env, &opts.cwd, name, "envFile")?;
             let env_path = resolve_runtime_path(&env_path, &opts.cwd, &opts.env);
-            let file_env = read_env_file(&env_path)
-                .with_context(|| format!("server '{name}': cannot read envFile {}", env_path.display()))?;
+            let file_env = read_env_file(&env_path).with_context(|| {
+                format!(
+                    "server '{name}': cannot read envFile {}",
+                    env_path.display()
+                )
+            })?;
             env.extend(file_env);
         }
         for (key, value) in &self.env {
@@ -204,7 +202,9 @@ impl ServerConfig {
             .args
             .iter()
             .enumerate()
-            .map(|(index, value)| render(value, &opts.env, &opts.cwd, name, &format!("args[{index}]")))
+            .map(|(index, value)| {
+                render(value, &opts.env, &opts.cwd, name, &format!("args[{index}]"))
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let transport = ResolvedTransport::Stdio {
@@ -381,7 +381,9 @@ impl RawServerConfig {
         let command = self.command.filter(|value| !value.is_empty());
         let url = self.url.filter(|value| !value.is_empty());
         match (kind, command.is_some(), url.is_some()) {
-            (Some(RawKind::Stdio), false, _) => return Err("stdio server requires 'command'".into()),
+            (Some(RawKind::Stdio), false, _) => {
+                return Err("stdio server requires 'command'".into());
+            }
             (Some(RawKind::Http), _, false) => return Err("HTTP server requires 'url'".into()),
             _ => {}
         }
@@ -408,9 +410,7 @@ impl RawServerConfig {
             cwd: self.cwd.filter(|value| !value.is_empty()),
             url,
             headers,
-            bearer_token_env_var: self
-                .bearer_token_env_var
-                .filter(|value| !value.is_empty()),
+            bearer_token_env_var: self.bearer_token_env_var.filter(|value| !value.is_empty()),
             env_file: self.env_file.filter(|value| !value.is_empty()),
             timeout_ms: self.timeout_ms,
             disabled,
@@ -458,7 +458,10 @@ fn value_map_to_strings(
         if value.is_null() {
             continue;
         }
-        result.insert(key.clone(), value_to_string(value, &format!("{field}.{key}"))?);
+        result.insert(
+            key.clone(),
+            value_to_string(value, &format!("{field}.{key}"))?,
+        );
     }
     Ok(result)
 }
@@ -475,7 +478,6 @@ fn value_to_string(value: Value, field: &str) -> std::result::Result<String, Str
     }
 }
 
-/// Where a server definition was loaded from.
 #[derive(Clone, Debug, Serialize)]
 pub struct ConfigOrigin {
     pub source: OriginSource,
@@ -522,7 +524,6 @@ pub struct ServerSummary {
     pub origins: Vec<ConfigOrigin>,
 }
 
-/// Options controlling global config location, client discovery, and environment.
 #[derive(Clone)]
 pub struct LoadOptions {
     pub cwd: PathBuf,
@@ -548,7 +549,11 @@ impl LoadOptions {
             Some(value) if value.eq_ignore_ascii_case("none") => Some(Vec::new()),
             Some(value) => {
                 let mut clients = Vec::new();
-                for name in value.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+                for name in value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                {
                     let client = Client::from_name(name).ok_or_else(|| {
                         anyhow!(
                             "invalid CM_CLIENTS entry '{name}'; expected a comma-separated list of: {}",
@@ -574,7 +579,6 @@ impl LoadOptions {
             env,
         })
     }
-
 }
 
 #[derive(Clone)]
@@ -582,21 +586,21 @@ pub struct ResolveOptions {
     pub env: BTreeMap<String, String>,
     pub cwd: PathBuf,
     pub include_stored_credentials: bool,
+    pub include_native_credentials: bool,
 }
 
 impl ResolveOptions {
     pub fn from_env() -> Self {
-    pub include_native_credentials: bool,
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             env: process_env(),
             cwd,
             include_stored_credentials: true,
+            include_native_credentials: false,
         }
     }
 }
 
-            include_native_credentials: false,
 impl Default for ResolveOptions {
     fn default() -> Self {
         Self::from_env()
@@ -682,7 +686,6 @@ impl fmt::Debug for ResolvedServer {
     }
 }
 
-/// Fully discovered configuration for this process.
 #[derive(Clone)]
 pub struct Config {
     pub servers: BTreeMap<String, ServerConfig>,
@@ -703,10 +706,7 @@ impl Config {
         let global_path = Self::global_path_from(opts)?;
         let mut global = GlobalFile::read(&global_path)?;
         let base = global_path.parent().unwrap_or_else(|| Path::new("."));
-        let home = opts
-            .home
-            .clone()
-            .or_else(|| home_from_env(&opts.env));
+        let home = opts.home.clone().or_else(|| home_from_env(&opts.env));
         for server in global.servers.values_mut() {
             normalize_server_paths(server, base, home.as_deref())?;
         }
@@ -735,7 +735,10 @@ impl Config {
             warnings.extend(discovery.warnings);
             let mut by_name: BTreeMap<String, Vec<import::Candidate>> = BTreeMap::new();
             for candidate in discovery.candidates {
-                by_name.entry(candidate.name.clone()).or_default().push(candidate);
+                by_name
+                    .entry(candidate.name.clone())
+                    .or_default()
+                    .push(candidate);
             }
             for (name, candidates) in by_name {
                 if all_servers.contains_key(&name) {
@@ -770,11 +773,7 @@ impl Config {
                                 .map(|path| path.display().to_string())
                                 .collect::<Vec<_>>()
                                 .join(", ");
-                            details.push(format!(
-                                "  - {}: {}",
-                                item.client.display_name(),
-                                paths
-                            ));
+                            details.push(format!("  - {}: {}", item.client.display_name(), paths));
                         }
                         bail!(
                             "conflicting definitions for MCP server '{name}' from client configs:\n{}\n\
@@ -813,7 +812,6 @@ impl Config {
         })
     }
 
-
     pub fn global_path_from(opts: &LoadOptions) -> Result<PathBuf> {
         let path = if let Some(path) = &opts.global_path {
             path.clone()
@@ -835,10 +833,7 @@ impl Config {
     }
 
     pub fn origins(&self, name: &str) -> &[ConfigOrigin] {
-        self.origins
-            .get(name)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.origins.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn summaries(&self) -> Vec<ServerSummary> {
@@ -924,7 +919,10 @@ impl Config {
         let mut global = GlobalFile::read(&config_path)?;
         let mut by_name: BTreeMap<String, Vec<import::Candidate>> = BTreeMap::new();
         for candidate in discovery.candidates {
-            by_name.entry(candidate.name.clone()).or_default().push(candidate);
+            by_name
+                .entry(candidate.name.clone())
+                .or_default()
+                .push(candidate);
         }
 
         for (name, candidates) in by_name {
@@ -968,7 +966,9 @@ impl Config {
         report.added.sort();
         report.updated.sort();
         report.unchanged.sort();
-        report.skipped.sort_by(|left, right| left.name.cmp(&right.name));
+        report
+            .skipped
+            .sort_by(|left, right| left.name.cmp(&right.name));
         Ok(report)
     }
 }
@@ -1049,10 +1049,12 @@ impl GlobalFile {
         let server_values = match object.get("mcpServers") {
             Some(Value::Object(servers)) => servers,
             Some(_) => bail!("{}: 'mcpServers' must be an object", path.display()),
-            None if object.is_empty() => return Ok(Self {
-                servers: BTreeMap::new(),
-                extra: BTreeMap::new(),
-            }),
+            None if object.is_empty() => {
+                return Ok(Self {
+                    servers: BTreeMap::new(),
+                    extra: BTreeMap::new(),
+                });
+            }
             None if object.keys().all(|key| key.starts_with('$')) => {
                 return Ok(Self {
                     servers: BTreeMap::new(),
@@ -1114,8 +1116,7 @@ fn write_global(path: &Path, global: &GlobalFile) -> Result<()> {
 }
 
 fn read_text(path: &Path) -> Result<String> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let metadata = fs::metadata(path).with_context(|| format!("cannot read {}", path.display()))?;
     if metadata.len() > MAX_CONFIG_BYTES {
         bail!(
             "{}: configuration is larger than {} MiB",
@@ -1123,8 +1124,8 @@ fn read_text(path: &Path) -> Result<String> {
             MAX_CONFIG_BYTES / (1024 * 1024)
         );
     }
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut text = String::new();
     file.read_to_string(&mut text)
         .with_context(|| format!("{} is not valid UTF-8", path.display()))?;
@@ -1132,8 +1133,7 @@ fn read_text(path: &Path) -> Result<String> {
 }
 
 fn parse_json_value(text: &str, path: &Path) -> Result<Value> {
-    json5::from_str(text)
-        .map_err(|_| anyhow!("{}: invalid JSON/JSONC", path.display()))
+    json5::from_str(text).map_err(|_| anyhow!("{}: invalid JSON/JSONC", path.display()))
 }
 
 fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
@@ -1217,7 +1217,11 @@ fn lock_config(path: &Path) -> Result<ConfigLock> {
 }
 
 fn xdg_config_dir(opts: &LoadOptions) -> Result<PathBuf> {
-    if let Some(value) = opts.env.get("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+    if let Some(value) = opts
+        .env
+        .get("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+    {
         let path = PathBuf::from(value);
         if !path.is_absolute() {
             bail!("XDG_CONFIG_HOME must be an absolute path");
@@ -1254,9 +1258,7 @@ fn home_from_env(env: &BTreeMap<String, String>) -> Option<PathBuf> {
 
 fn process_env() -> BTreeMap<String, String> {
     std::env::vars_os()
-        .filter_map(|(key, value)| {
-            Some((key.into_string().ok()?, value.into_string().ok()?))
-        })
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
         .collect()
 }
 
@@ -1278,10 +1280,12 @@ fn expand_tilde(value: &str, env: &BTreeMap<String, String>) -> String {
             .map(|home| home.to_string_lossy().into_owned())
             .unwrap_or_else(|| value.to_string());
     }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
-        if let Some(home) = home_from_env(env) {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+        && let Some(home) = home_from_env(env)
+    {
+        return home.join(rest).to_string_lossy().into_owned();
     }
     value.to_string()
 }
@@ -1322,27 +1326,29 @@ pub(crate) fn normalize_server_paths(
 ) -> Result<()> {
     let env = BTreeMap::new();
     let home_env = home
-        .map(|home| {
-            BTreeMap::from([(
-                "HOME".to_string(),
-                home.to_string_lossy().into_owned(),
-            )])
-        })
+        .map(|home| BTreeMap::from([("HOME".to_string(), home.to_string_lossy().into_owned())]))
         .unwrap_or(env);
-    if let Some(command) = server.command.as_mut() {
-        if looks_like_path(command) && !command.contains("${") {
-            *command = resolve_source_path(command, base, &home_env).to_string_lossy().into_owned();
-        }
+    if let Some(command) = server.command.as_mut()
+        && looks_like_path(command)
+        && !command.contains("${")
+    {
+        *command = resolve_source_path(command, base, &home_env)
+            .to_string_lossy()
+            .into_owned();
     }
-    if let Some(cwd) = server.cwd.as_mut() {
-        if !cwd.contains("${") {
-            *cwd = resolve_source_path(cwd, base, &home_env).to_string_lossy().into_owned();
-        }
+    if let Some(cwd) = server.cwd.as_mut()
+        && !cwd.contains("${")
+    {
+        *cwd = resolve_source_path(cwd, base, &home_env)
+            .to_string_lossy()
+            .into_owned();
     }
-    if let Some(env_file) = server.env_file.as_mut() {
-        if !env_file.contains("${") {
-            *env_file = resolve_source_path(env_file, base, &home_env).to_string_lossy().into_owned();
-        }
+    if let Some(env_file) = server.env_file.as_mut()
+        && !env_file.contains("${")
+    {
+        *env_file = resolve_source_path(env_file, base, &home_env)
+            .to_string_lossy()
+            .into_owned();
     }
     Ok(())
 }
@@ -1484,35 +1490,35 @@ fn read_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 fn parse_dotenv_value(value: &str) -> String {
-    if let Some(inner) = value.strip_prefix('"') {
-        if let Some(inner) = inner.strip_suffix('"') {
-            let mut output = String::with_capacity(inner.len());
-            let mut chars = inner.chars();
-            while let Some(ch) = chars.next() {
-                if ch == '\\' {
-                    match chars.next() {
-                        Some('n') => output.push('\n'),
-                        Some('r') => output.push('\r'),
-                        Some('t') => output.push('\t'),
-                        Some('"') => output.push('"'),
-                        Some('\\') => output.push('\\'),
-                        Some(other) => {
-                            output.push('\\');
-                            output.push(other);
-                        }
-                        None => output.push('\\'),
+    if let Some(inner) = value.strip_prefix('"')
+        && let Some(inner) = inner.strip_suffix('"')
+    {
+        let mut output = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('n') => output.push('\n'),
+                    Some('r') => output.push('\r'),
+                    Some('t') => output.push('\t'),
+                    Some('"') => output.push('"'),
+                    Some('\\') => output.push('\\'),
+                    Some(other) => {
+                        output.push('\\');
+                        output.push(other);
                     }
-                } else {
-                    output.push(ch);
+                    None => output.push('\\'),
                 }
+            } else {
+                output.push(ch);
             }
-            return output;
         }
+        return output;
     }
-    if let Some(inner) = value.strip_prefix('\'') {
-        if let Some(inner) = inner.strip_suffix('\'') {
-            return inner.to_string();
-        }
+    if let Some(inner) = value.strip_prefix('\'')
+        && let Some(inner) = inner.strip_suffix('\'')
+    {
+        return inner.to_string();
     }
     let mut output = value.to_string();
     if let Some(index) = output.find(" #") {
@@ -1566,10 +1572,7 @@ fn fingerprint_resolved(
             }
         }
     }
-    hash_field(
-        &mut hasher,
-        &timeout_ms.unwrap_or_default().to_be_bytes(),
-    );
+    hash_field(&mut hasher, &timeout_ms.unwrap_or_default().to_be_bytes());
     hash_field(&mut hasher, b"env");
     hash_field(&mut hasher, &(opts.env.len() as u64).to_be_bytes());
     for (key, value) in &opts.env {
@@ -1582,10 +1585,7 @@ fn fingerprint_resolved(
         _ => opts.cwd.clone(),
     };
     hash_field(&mut hasher, b"cwd-effective");
-    hash_field(
-        &mut hasher,
-        effective_cwd.to_string_lossy().as_bytes(),
-    );
+    hash_field(&mut hasher, effective_cwd.to_string_lossy().as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -1608,7 +1608,7 @@ fn hash_raw_process_env(hasher: &mut Sha256) {
 }
 
 fn secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase().replace(|c: char| matches!(c, '-' | '_' | '.'), "");
+    let key = key.to_ascii_lowercase().replace(['-', '_', '.'], "");
     [
         "token",
         "secret",
@@ -1626,15 +1626,11 @@ fn secret_key(key: &str) -> bool {
     .any(|needle| key.contains(needle))
 }
 
-
 fn safe_endpoint(raw: &str) -> String {
     let Some((scheme, rest)) = raw.split_once("://") else {
         return REDACTED.to_string();
     };
-    let authority = rest
-        .split(|c: char| matches!(c, '/' | '?' | '#'))
-        .next()
-        .unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let authority = authority
         .rsplit_once('@')
         .map(|(_, host)| host)
@@ -1650,14 +1646,14 @@ fn redact_url(raw: &str) -> String {
         Some((left, right)) => (left, Some(right)),
         None => (rest, None),
     };
-    let (authority, path_and_query) = match authority_and_path.find(|c: char| c == '/' || c == '?') {
-        Some(index) => (
-            &authority_and_path[..index],
-            &authority_and_path[index..],
-        ),
+    let (authority, path_and_query) = match authority_and_path.find(['/', '?']) {
+        Some(index) => (&authority_and_path[..index], &authority_and_path[index..]),
         None => (authority_and_path, ""),
     };
-    let authority = authority.rsplit_once('@').map(|(_, host)| host).unwrap_or(authority);
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
     let mut output = format!("{scheme}://{authority}");
     if let Some(query_index) = path_and_query.find('?') {
         output.push_str(&path_and_query[..query_index]);
@@ -1703,9 +1699,7 @@ fn lookup_stored_token(
         match store.lookup(server_name, url) {
             Some(valid @ StoredToken::Valid { .. }) => return Some(valid),
             Some(item @ StoredToken::Expired { .. }) => {
-                if expired.is_none() {
-                    expired = Some(item);
-                }
+                expired.get_or_insert(item);
             }
             None => {}
         }
@@ -1818,13 +1812,13 @@ fn lookup_entries<'a>(
                 }
                 CredentialStoreKind::Codex => ("Codex", format!("codex mcp login {server_name}")),
                 CredentialStoreKind::OpenCode => {
-            continue;
                     ("OpenCode", format!("opencode mcp auth {server_name}"))
                 }
             };
             if expired.is_none() {
                 expired = Some(StoredToken::Expired { client, login });
             }
+            continue;
         }
         return Some(StoredToken::Valid {
             token: token.to_string(),
@@ -1833,10 +1827,7 @@ fn lookup_entries<'a>(
     expired
 }
 
-fn string_field<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    names: &[&str],
-) -> Option<&'a str> {
+fn string_field<'a>(object: &'a serde_json::Map<String, Value>, names: &[&str]) -> Option<&'a str> {
     names
         .iter()
         .find_map(|name| object.get(*name).and_then(Value::as_str))
@@ -1868,7 +1859,10 @@ fn urls_match(left: &str, right: &str) -> bool {
 }
 
 fn claude_credentials_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
-    if let Some(dir) = env.get("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
+    if let Some(dir) = env
+        .get("CLAUDE_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+    {
         return Some(PathBuf::from(dir).join(".credentials.json"));
     }
     home_from_env(env).map(|home| home.join(".claude").join(".credentials.json"))

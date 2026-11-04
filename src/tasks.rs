@@ -19,8 +19,6 @@ pub fn validate_receipt(result: &Value) -> Result<()> {
         "task {:?} requires unsupported client input; cm never fulfills elicitation, sampling, or roots",
         result["taskId"]
     );
-    // Result objects may contain extension fields. Preserve them, rather than
-    // rejecting fields that happen to share names with a synchronous result.
     Ok(())
 }
 
