@@ -1,0 +1,120 @@
+use std::{
+    fs,
+    process::{Command, Output},
+};
+
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+struct Workspace(TempDir);
+
+impl Workspace {
+    fn new() -> Self {
+        Self(tempfile::tempdir().unwrap())
+    }
+
+    fn write(&self, path: &str, contents: &str) {
+        let path = self.0.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    fn global(&self) -> std::path::PathBuf {
+        self.0.path().join("global.json")
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_cm"))
+            .env_clear()
+            .env("HOME", self.0.path())
+            .env("XDG_CONFIG_HOME", self.0.path().join(".config"))
+            .env("CM_CONFIG", self.global())
+            .current_dir(self.0.path())
+            .args(args)
+            .output()
+            .unwrap()
+    }
+}
+
+fn successful_json(output: Output) -> Value {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn discovery_keeps_valid_sources_when_other_configs_are_invalid_or_missing() {
+    let workspace = Workspace::new();
+    workspace.write("global.json", "{broken");
+    workspace.write(".cursor/mcp.json", "{broken");
+    workspace.write(
+        ".codex/config.toml",
+        "[mcp_servers.working]\ncommand = 'fixture-server'\n",
+    );
+    workspace.write(".mcp.json", r#"{"mcpServers":{"invalid":{"args":[]}}}"#);
+
+    let servers = successful_json(workspace.run(&["servers", "list"]));
+    assert_eq!(
+        servers
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| server["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["working"]
+    );
+    assert_eq!(fs::read_to_string(workspace.global()).unwrap(), "{broken");
+}
+
+#[test]
+fn invalid_and_missing_import_sources_leave_global_config_unchanged() {
+    let workspace = Workspace::new();
+    let original = r#"{"mcpServers":{"existing":{"command":"existing-server"}}}"#;
+    workspace.write("global.json", original);
+    for (name, contents) in [
+        ("malformed.json", "{broken"),
+        ("invalid.json", r#"{"mcpServers":[]}"#),
+        (
+            "incomplete.json",
+            r#"{"mcpServers":{"invalid":{"args":[]}}}"#,
+        ),
+    ] {
+        workspace.write(name, contents);
+    }
+    for path in [
+        "missing.json",
+        "malformed.json",
+        "invalid.json",
+        "incomplete.json",
+    ] {
+        let report = successful_json(workspace.run(&["import", "cursor", "--path", path]));
+        assert_eq!(report["added"], json!([]));
+        assert_eq!(report["updated"], json!([]));
+        assert_eq!(fs::read_to_string(workspace.global()).unwrap(), original);
+    }
+    let report = successful_json(workspace.run(&["import", "cursor"]));
+    assert_eq!(report["added"], json!([]));
+    assert_eq!(fs::read_to_string(workspace.global()).unwrap(), original);
+}
+
+#[test]
+fn import_all_skips_bad_sources_without_overwriting_invalid_destination() {
+    let workspace = Workspace::new();
+    workspace.write(".cursor/mcp.json", "{broken");
+    workspace.write(
+        ".codex/config.toml",
+        "[mcp_servers.working]\ncommand = 'fixture-server'\n",
+    );
+    let report = successful_json(workspace.run(&["import", "--all"]));
+    assert_eq!(report["added"], json!(["working"]));
+    let global: Value = serde_json::from_slice(&fs::read(workspace.global()).unwrap()).unwrap();
+    assert_eq!(global["mcpServers"]["working"]["command"], "fixture-server");
+
+    workspace.write("global.json", "{broken");
+    let report = successful_json(workspace.run(&["import", "--all", "--force"]));
+    assert_eq!(report["added"], json!([]));
+    assert_eq!(fs::read_to_string(workspace.global()).unwrap(), "{broken");
+}
