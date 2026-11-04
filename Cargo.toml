@@ -1,0 +1,29 @@
+[package]
+name = "codemode-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A stateless MCP host for shell-native agent workflows"
+license = "MIT"
+
+[[bin]]
+name = "cm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+fs2 = "0.4"
+hex = "0.4"
+json5 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+toml = "0.9"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
