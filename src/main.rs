@@ -19,7 +19,11 @@ use std::{
 };
 
 fn main() -> ExitCode {
-    match app::run(cli::Cli::parse()) {
+    let cli = cli::Cli::parse();
+    if let Err(error) = cli.validate() {
+        error.exit();
+    }
+    match app::run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error)
             if error.chain().any(|cause| {

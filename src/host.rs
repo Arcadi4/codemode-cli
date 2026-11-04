@@ -51,6 +51,30 @@ impl CatalogKind {
             _ => "name",
         }
     }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tools => "tool",
+            Self::Prompts => "prompt",
+            Self::Resources => "resource",
+            Self::Templates => "resource template",
+        }
+    }
+    fn help(self) -> &'static str {
+        match self {
+            Self::Tools => {
+                "use `cm tools list` or `cm tools search` to find names, or `cm tools schema <name>` for details"
+            }
+            Self::Prompts => {
+                "use `cm prompts list` to find names, or `cm prompts schema <name>` for details"
+            }
+            Self::Resources => {
+                "use `cm resources list` to find URIs, or `cm resources schema <uri> --server <server>` for details"
+            }
+            Self::Templates => {
+                "use `cm resources templates` to find URI templates, or `cm resources schema <uri> --server <server> --template` for details"
+            }
+        }
+    }
 }
 
 pub struct CatalogEntry {
@@ -356,26 +380,47 @@ impl Host {
         name: &str,
         selected: Option<&str>,
     ) -> Result<CatalogEntry> {
+        if let Some(server) = selected {
+            ensure!(
+                self.config.get(server).is_some(),
+                "unknown server {server:?}"
+            );
+            let mut matches = self
+                .catalog_for(kind, server)
+                .await?
+                .into_iter()
+                .filter(|entry| entry.native_name() == name || entry.name == name);
+            let entry = matches
+                .next()
+                .with_context(|| format!("no matching {}; {}", kind.label(), kind.help()))?;
+            ensure!(
+                matches.next().is_none(),
+                "name matches multiple {} entries on the selected server; {}",
+                kind.label(),
+                kind.help()
+            );
+            return Ok(entry);
+        }
         let candidates: Vec<_> = self
             .config
             .servers
             .keys()
             .filter(|server| {
-                selected.is_none_or(|selected| selected == server.as_str())
-                    && name
-                        .strip_prefix(server.as_str())
-                        .is_some_and(|suffix| suffix.starts_with('_'))
+                name.strip_prefix(server.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('_'))
             })
             .cloned()
             .collect();
         ensure!(
             !candidates.is_empty(),
-            "unknown namespaced name {name:?}; use <server>_<name> from the list command"
+            "no matching {}; {}",
+            kind.label(),
+            kind.help()
         );
+        let sole_candidate = candidates.len() == 1;
         let mut found = None;
-        let explicit_server = selected.is_some() || candidates.len() == 1;
         for server in candidates {
-            let catalog = if explicit_server {
+            let catalog = if sole_candidate {
                 self.catalog_for(kind, &server).await?
             } else {
                 self.available_catalog(kind, &server).await
@@ -383,17 +428,14 @@ impl Host {
             if let Some(entry) = catalog.into_iter().find(|entry| entry.name == name) {
                 ensure!(
                     found.is_none(),
-                    "ambiguous name {name:?}; use --server to select its server"
+                    "name matches {} entries on multiple servers; use --server to select one; {}",
+                    kind.label(),
+                    kind.help()
                 );
                 found = Some(entry);
             }
         }
-        found.with_context(|| {
-            format!(
-                "no {} entry {name:?}; list available names or use --refresh",
-                kind.field()
-            )
-        })
+        found.with_context(|| format!("no matching {}; {}", kind.label(), kind.help()))
     }
 
     pub async fn locate_resource(
@@ -427,7 +469,9 @@ impl Host {
 
     pub async fn call_tool(&mut self, entry: CatalogEntry, arguments: Value) -> Result<Value> {
         let input_schema = &entry.definition["inputSchema"];
-        schema::validate_instance(input_schema, &arguments, "tool arguments")?;
+        schema::validate_instance(input_schema, &arguments, "tool arguments").with_context(
+            || format!("use `cm tools schema {}` for argument details", entry.name),
+        )?;
         let result = self
             .client(&entry.server)?
             .request(
@@ -462,7 +506,8 @@ impl Host {
                         .context("prompt argument is missing its name")?;
                     ensure!(
                         arguments.get(name).is_some(),
-                        "missing required prompt argument {name:?}"
+                        "missing required prompt argument {name:?}; use `cm prompts schema {}`",
+                        entry.name
                     );
                 }
             }

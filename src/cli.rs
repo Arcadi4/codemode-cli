@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use std::path::PathBuf;
 
 use crate::import::Client;
@@ -17,8 +17,9 @@ pub struct Cli {
     /// Re-fetch metadata/resources even while server-provided cache TTLs are fresh
     #[arg(long, global = true)]
     pub refresh: bool,
-    /// Limit catalog discovery and name resolution to this configured server
-    #[arg(long = "server", short = 's', global = true)]
+    /// Select a server; required for URI operations, server discovery, and tasks.
+    /// Scoped tools and prompts accept native or namespaced names.
+    #[arg(long = "server", short = 's', global = true, value_name = "SERVER")]
     pub selected_server: Option<String>,
     /// Maximum request deadline in seconds (shorter source-client timeouts apply)
     #[arg(long, global = true, default_value = "60", value_parser = clap::value_parser!(u64).range(1..))]
@@ -34,6 +35,50 @@ pub struct Cli {
     pub native_credentials: bool,
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    pub fn validate(&self) -> Result<(), clap::Error> {
+        if self.selected_server.is_some() {
+            return Ok(());
+        }
+        let (family, action) = match &self.command {
+            Command::Resources {
+                command: Resources::Schema { .. },
+            } => ("resources", "schema"),
+            Command::Resources {
+                command: Resources::Discover { .. },
+            } => ("resources", "discover"),
+            Command::Resources {
+                command: Resources::Read { .. },
+            } => ("resources", "read"),
+            Command::Resources {
+                command: Resources::Complete { .. },
+            } => ("resources", "complete"),
+            Command::Servers {
+                command: Servers::Discover,
+            } => ("servers", "discover"),
+            Command::Tasks {
+                command: Tasks::Get { .. },
+            } => ("tasks", "get"),
+            Command::Tasks {
+                command: Tasks::Cancel { .. },
+            } => ("tasks", "cancel"),
+            _ => return Ok(()),
+        };
+        let mut root = Self::command();
+        root.build();
+        let mut command = root
+            .find_subcommand_mut(family)
+            .and_then(|command| command.find_subcommand_mut(action))
+            .expect("targeted subcommand exists")
+            .clone()
+            .bin_name(format!("cm {family} {action}"));
+        Err(command.error(
+            ErrorKind::MissingRequiredArgument,
+            format!("--server <SERVER> is required; use `cm {family} {action} --help`"),
+        ))
+    }
 }
 
 #[derive(Subcommand)]
@@ -139,23 +184,20 @@ pub enum Resources {
     Templates,
     /// Print URI/MIME declarations (MCP resources do not declare JSON Schemas)
     Schema {
-        server: String,
         uri: String,
         #[arg(long)]
         template: bool,
     },
     /// Print the full resource/template definition plus server instructions
     Discover {
-        server: String,
         uri: String,
         #[arg(long)]
         template: bool,
     },
     /// Read an explicit URI from a server (including expanded templates)
-    Read { server: String, uri: String },
+    Read { uri: String },
     /// Complete a resource URI/template argument
     Complete {
-        server: String,
         uri: String,
         argument: String,
         value: String,
@@ -170,7 +212,7 @@ pub enum Servers {
     /// List server names, transports and configuration origins (no network or secrets)
     List,
     /// Print supported versions, capabilities, identity and server instructions
-    Discover { server: String },
+    Discover,
 }
 
 #[derive(Subcommand)]
@@ -184,7 +226,7 @@ pub enum Skills {
 #[derive(Subcommand)]
 pub enum Tasks {
     /// Fetch task state/result; respect pollIntervalMs before a subsequent poll
-    Get { server: String, task_id: String },
+    Get { task_id: String },
     /// Request cooperative cancellation; acknowledgement does not prove work stopped
-    Cancel { server: String, task_id: String },
+    Cancel { task_id: String },
 }

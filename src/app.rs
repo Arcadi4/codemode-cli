@@ -89,18 +89,11 @@ pub fn run(cli: Cli) -> Result<()> {
             command: Servers::List,
         } => {
             let config = load_config()?;
+            let mut summaries = config.summaries();
             if let Some(server) = &selected_server {
-                ensure!(config.get(server).is_some(), "unknown server {server:?}");
+                summaries.retain(|summary| summary.name == *server);
+                ensure!(!summaries.is_empty(), "unknown server {server:?}");
             }
-            let summaries: Vec<_> = config
-                .summaries()
-                .into_iter()
-                .filter(|summary| {
-                    selected_server
-                        .as_ref()
-                        .is_none_or(|server| server == &summary.name)
-                })
-                .collect();
             write_json(&summaries, &mut io::stdout().lock())
         }
         command => {
@@ -259,33 +252,26 @@ async fn execute(
         Command::Resources { command } => match command {
             Resources::List => list(host, CatalogKind::Resources, selected, stdout).await,
             Resources::Templates => list(host, CatalogKind::Templates, selected, stdout).await,
-            Resources::Schema {
-                server,
-                uri,
-                template,
-            } => {
+            Resources::Schema { uri, template } => {
+                let server = require_server(selected)?;
                 let kind = if template {
                     CatalogKind::Templates
                 } else {
                     CatalogKind::Resources
                 };
-                let entry = host.locate_resource(&server, &uri, template).await?;
+                let entry = host.locate_resource(server, &uri, template).await?;
                 write_json(&entry.schema(kind), stdout)
             }
-            Resources::Discover {
-                server,
-                uri,
-                template,
-            } => {
-                let entry = host.locate_resource(&server, &uri, template).await?;
+            Resources::Discover { uri, template } => {
+                let server = require_server(selected)?;
+                let entry = host.locate_resource(server, &uri, template).await?;
                 write_json(&host.full_specification(entry).await?, stdout)
             }
-            Resources::Read { server, uri } => {
-                let result = host.read_resource(&server, uri).await?;
+            Resources::Read { uri } => {
+                let result = host.read_resource(require_server(selected)?, uri).await?;
                 output::render(result, output::OutputKind::Resources, json_output, stdout)
             }
             Resources::Complete {
-                server,
                 uri,
                 argument,
                 value,
@@ -293,7 +279,7 @@ async fn execute(
             } => {
                 let result = host
                     .complete(
-                        &server,
+                        require_server(selected)?,
                         json!({"type":"ref/resource","uri":uri}),
                         argument,
                         value,
@@ -311,11 +297,11 @@ async fn execute(
             }
         },
         Command::Servers {
-            command: Servers::Discover { server },
-        } => write_json(host.discover(&server).await?, stdout),
+            command: Servers::Discover,
+        } => write_json(host.discover(require_server(selected)?).await?, stdout),
         Command::Tasks { command } => match command {
-            Tasks::Get { server, task_id } => {
-                let result = tasks::get(host, &server, &task_id).await?;
+            Tasks::Get { task_id } => {
+                let result = tasks::get(host, require_server(selected)?, &task_id).await?;
                 let failed = tasks::failed(&result);
                 write_json(&result, stdout)?;
                 if failed {
@@ -323,12 +309,17 @@ async fn execute(
                 }
                 Ok(())
             }
-            Tasks::Cancel { server, task_id } => {
-                write_json(&tasks::cancel(host, &server, &task_id).await?, stdout)
-            }
+            Tasks::Cancel { task_id } => write_json(
+                &tasks::cancel(host, require_server(selected)?, &task_id).await?,
+                stdout,
+            ),
         },
         _ => unreachable!("local commands execute before the runtime starts"),
     }
+}
+
+fn require_server(selected: Option<&str>) -> Result<&str> {
+    selected.context("this operation requires --server <SERVER>")
 }
 
 async fn list(
