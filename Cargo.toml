@@ -43,6 +43,9 @@ nix = { version = "0.31", default-features = false, features = ["signal", "proce
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
+[dev-dependencies]
+tiny_http = "0.12"
+
 [profile.release]
 strip = true
 lto = "thin"

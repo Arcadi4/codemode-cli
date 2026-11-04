@@ -43,3 +43,13 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/config.rs"]
+mod config_tests;
+#[cfg(test)]
+#[path = "../tests/unit/credentials.rs"]
+mod credential_tests;
+#[cfg(test)]
+#[path = "../tests/unit/output.rs"]
+mod output_tests;
