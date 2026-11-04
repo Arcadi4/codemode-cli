@@ -101,6 +101,7 @@ pub struct Host {
     refresh: bool,
     max_bytes: usize,
     tasks: bool,
+    native_credentials: bool,
 }
 
 impl Host {
@@ -110,6 +111,7 @@ impl Host {
         refresh: bool,
         max_bytes: usize,
         tasks: bool,
+        native_credentials: bool,
     ) -> Self {
         Self {
             config,
@@ -119,12 +121,19 @@ impl Host {
             refresh,
             max_bytes,
             tasks,
+            native_credentials,
         }
     }
 
     fn client(&mut self, server: &str) -> Result<&mut Client> {
         if !self.clients.contains_key(server) {
-            let resolved = self.config.resolve(server)?;
+            let resolved = if self.native_credentials {
+                let mut options = crate::config::ResolveOptions::from_env();
+                options.include_native_credentials = true;
+                self.config.resolve_with(server, &options)?
+            } else {
+                self.config.resolve(server)?
+            };
             let timeout = resolved
                 .timeout_ms
                 .map(Duration::from_millis)

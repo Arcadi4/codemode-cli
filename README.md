@@ -41,6 +41,8 @@ Named VS Code profiles are discovered alongside the default profile. Different d
 
 Environment/header credentials and supported environment/file references are resolved on demand. Unexpired, endpoint-bound OAuth tokens can be reused from Claude Code, Codex, and OpenCode file stores. Name-only token records are not trusted. Interactive OAuth and executable header helpers are not used; configure static headers/environment credentials when a source cannot expose its token.
 
+On macOS, `--native-credentials` also permits read-only access to endpoint-bound MCP OAuth grants in the Claude Code and Codex keychains and the VS Code and Cursor encrypted stores. This flag is off by default; the OS may request access approval. Explicit Authorization headers and bearer-token environment variables take precedence. Expired grants require signing in again with the source client. GitHub login sessions, Devin account tokens, and Copilot CLI's separate native vault are not reused.
+
 ## Shell contract
 
 - Stdout contains data, never banners or logs. Catalogs, schemas, and discovery are JSON. Tool structured output is JSON; unstructured text is printed directly. Distinct structured/content output retains its full envelope rather than losing content.

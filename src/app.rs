@@ -35,6 +35,7 @@ pub fn run(cli: Cli) -> Result<()> {
         timeout,
         max_response_bytes,
         tasks_enabled,
+        native_credentials,
     } = cli;
     match command {
         Command::Import(args) => {
@@ -112,7 +113,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 .build()?;
             runtime.block_on(async move {
                 let max_bytes = usize::try_from(max_response_bytes).context("response limit is too large for this platform")?;
-                let mut host = Host::new(config, Duration::from_secs(timeout), refresh, max_bytes, tasks_enabled);
+                let mut host = Host::new(config, Duration::from_secs(timeout), refresh, max_bytes, tasks_enabled, native_credentials);
                 let mut stdout = io::stdout().lock();
                 let result = tokio::select! {
                     result = execute(&mut host, command, payload, selected_server.as_deref(), json, &mut stdout) => result,

@@ -4,6 +4,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use fs2::FileExt;
@@ -227,7 +228,9 @@ impl ServerConfig {
             .ok_or_else(|| anyhow!("server '{name}' has no url"))?;
         let url = render(url, &opts.env, &opts.cwd, name, "url")?;
         if !(url.starts_with("http://") || url.starts_with("https://")) {
-            bail!("server '{name}': URL must use http:// or https:// after environment substitution");
+            bail!(
+                "server '{name}': URL must use http:// or https:// after environment substitution"
+            );
         }
         let mut headers = BTreeMap::new();
         for (key, value) in &self.headers {
@@ -237,7 +240,9 @@ impl ServerConfig {
             );
         }
 
-        let has_authorization = headers.keys().any(|key| key.eq_ignore_ascii_case("authorization"));
+        let has_authorization = headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("authorization"));
         if let Some(env_var) = self.bearer_token_env_var.as_deref() {
             if has_authorization {
                 bail!(
@@ -252,18 +257,39 @@ impl ServerConfig {
                 )
             })?;
             headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-        } else if !has_authorization && opts.include_stored_credentials {
-            match lookup_stored_token(name, &url, &opts.env) {
-                Some(StoredToken::Valid { token, .. }) => {
-                    headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-                }
-                Some(StoredToken::Expired { client, login }) => {
+        } else if !has_authorization {
+            let stored = opts
+                .include_stored_credentials
+                .then(|| lookup_stored_token(name, &url, &opts.env))
+                .flatten();
+            if let Some(StoredToken::Valid { token, .. }) = stored {
+                headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+            } else {
+                let native = if opts.include_native_credentials {
+                    crate::credentials::lookup(name, &url, &opts.env)?
+                } else {
+                    None
+                };
+                if let Some(token) = native {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                    if token
+                        .expires_at
+                        .is_some_and(|expiry| expiry <= now.saturating_add(30))
+                    {
+                        bail!(
+                            "server '{name}': stored {} OAuth token has expired; sign in with that client again",
+                            token.source
+                        );
+                    }
+                    headers.insert(
+                        "Authorization".to_string(),
+                        format!("Bearer {}", token.access_token),
+                    );
+                } else if let Some(StoredToken::Expired { client, login }) = stored {
                     bail!(
-                        "server '{name}': stored {client} OAuth token has expired; \
-                         run `{login}` or configure an Authorization header"
+                        "server '{name}': stored {client} OAuth token has expired; run `{login}` or configure an Authorization header"
                     );
                 }
-                None => {}
             }
         }
 
@@ -560,6 +586,7 @@ pub struct ResolveOptions {
 
 impl ResolveOptions {
     pub fn from_env() -> Self {
+    pub include_native_credentials: bool,
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             env: process_env(),
@@ -569,6 +596,7 @@ impl ResolveOptions {
     }
 }
 
+            include_native_credentials: false,
 impl Default for ResolveOptions {
     fn default() -> Self {
         Self::from_env()
@@ -1752,7 +1780,7 @@ fn lookup_entries<'a>(
         let Some(entry) = value.as_object() else {
             continue;
         };
-        let Some(entry_url) = string_field(entry, &["serverUrl", "server_url"]) else {
+        let Some(entry_url) = string_field(entry, &["serverUrl", "server_url", "url"]) else {
             continue;
         };
         if !urls_match(entry_url, url) {
@@ -1763,31 +1791,39 @@ fn lookup_entries<'a>(
                 .get("tokens")
                 .and_then(Value::as_object)
                 .and_then(|tokens| string_field(tokens, &["accessToken", "access_token"])),
-            CredentialStoreKind::Claude | CredentialStoreKind::Codex => {
-                string_field(entry, &["accessToken", "access_token"])
-            }
+            CredentialStoreKind::Claude => string_field(entry, &["accessToken", "access_token"]),
+            CredentialStoreKind::Codex => entry
+                .get("token_response")
+                .and_then(Value::as_object)
+                .and_then(|tokens| string_field(tokens, &["access_token"]))
+                .or_else(|| string_field(entry, &["accessToken", "access_token"])),
         };
         let Some(token) = token.filter(|token| !token.is_empty()) else {
             continue;
         };
-        let expires = number_field(entry, &["expiresAt", "expires_at"]).map(normalize_timestamp);
-        if let Some(expires) = expires {
-            if expires <= now.saturating_add(30) {
-                let (client, login) = match kind {
-                    CredentialStoreKind::Claude => {
-                        ("Claude Code", format!("claude mcp login {server_name}"))
-                    }
-                    CredentialStoreKind::Codex => {
-                        ("Codex", format!("codex mcp login {server_name}"))
-                    }
-                    CredentialStoreKind::OpenCode => {
-                        ("OpenCode", format!("opencode mcp auth {server_name}"))
-                    }
-                };
-                if expired.is_none() {
-                    expired = Some(StoredToken::Expired { client, login });
+        let expires = number_field(entry, &["expiresAt", "expires_at"])
+            .or_else(|| {
+                entry
+                    .get("tokens")
+                    .and_then(Value::as_object)
+                    .and_then(|tokens| number_field(tokens, &["expiresAt", "expires_at"]))
+            })
+            .map(normalize_timestamp);
+        if let Some(expires) = expires
+            && expires <= now.saturating_add(30)
+        {
+            let (client, login) = match kind {
+                CredentialStoreKind::Claude => {
+                    ("Claude Code", format!("claude mcp login {server_name}"))
                 }
-                continue;
+                CredentialStoreKind::Codex => ("Codex", format!("codex mcp login {server_name}")),
+                CredentialStoreKind::OpenCode => {
+            continue;
+                    ("OpenCode", format!("opencode mcp auth {server_name}"))
+                }
+            };
+            if expired.is_none() {
+                expired = Some(StoredToken::Expired { client, login });
             }
         }
         return Some(StoredToken::Valid {
@@ -1825,7 +1861,10 @@ fn normalize_timestamp(value: u64) -> u64 {
 }
 
 fn urls_match(left: &str, right: &str) -> bool {
-    left.trim_end_matches('/') == right.trim_end_matches('/')
+    match (reqwest::Url::parse(left), reqwest::Url::parse(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn claude_credentials_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {

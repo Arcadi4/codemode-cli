@@ -29,6 +29,9 @@ pub struct Cli {
     /// Opt into durable asynchronous task handles instead of requiring inline results
     #[arg(long = "tasks", global = true)]
     pub tasks_enabled: bool,
+    /// Read endpoint-bound OAuth tokens from supported macOS credential stores
+    #[arg(long, global = true)]
+    pub native_credentials: bool,
     #[command(subcommand)]
     pub command: Command,
 }

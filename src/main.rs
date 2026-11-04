@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod cli;
 mod config;
+mod credentials;
 mod host;
 mod import;
 mod mcp;
