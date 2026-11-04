@@ -31,7 +31,7 @@ pub fn render(
     out: &mut impl Write,
 ) -> Result<()> {
     let result = normalize(result, kind)?;
-    if json_output {
+    if json_output || result.get("resultType").and_then(Value::as_str) == Some("task") {
         write_json(&result, out)?;
     } else {
         match kind {
@@ -97,6 +97,9 @@ pub fn render(
 /// fields, including server-defined `path` fields. Files survive successful use.
 pub fn normalize(mut result: Value, kind: OutputKind) -> Result<Value> {
     ensure!(result.is_object(), "MCP result must be an object");
+    if result.get("resultType").and_then(Value::as_str) == Some("task") {
+        return Ok(result);
+    }
     let mut artifacts = Artifacts::default();
     match kind {
         OutputKind::Tool => {

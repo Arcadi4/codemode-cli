@@ -47,6 +47,12 @@ Environment/header credentials and supported environment/file references are res
 - Diagnostics and server stderr stay on stderr. Exit status is `0` for success, `1` for operational/tool errors, `2` for usage errors, `130` for SIGINT, and `143` for SIGTERM. Broken pipes terminate quietly. A timeout/interruption does not prove a side effect did not execute; interrupted calls are not automatically replayed.
 - `--timeout` bounds each request, including startup/probing; a shorter source-client timeout still applies. `--max-response-bytes` defaults to 64 MiB of encoded response data and can be raised for large media. Stdio processes receive EOF and are reaped, with termination escalation if necessary.
 
+## Asynchronous Tasks
+
+For servers advertising the [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview), `--tasks` permits `tools call` to return a durable task handle instead of an inline result. The server chooses which form to return. Use `cm tasks get SERVER TASK_ID` to retrieve state and the eventual result, or `cm tasks cancel SERVER TASK_ID` to request cooperative cancellation. These commands explicitly opt into the extension; it is otherwise disabled.
+
+Task handles survive separate CLI invocations. Keep the returned ID and respect `pollIntervalMs` in shell polling loops. Task state/results are not cached, no polling happens in the background, and cancellation acknowledgement does not prove work stopped. Completed tool errors still exit nonzero. Tasks requesting elicitation or deprecated client input are rejected rather than fulfilled. Only the 2026 Tasks methods are supported, not legacy task/session APIs.
+
 ## Cache
 
 Only protocol-designated discovery/list/resource-read results are persisted. Server `ttlMs` and `cacheScope` hints govern freshness; missing, zero, or negative TTLs are not reused. Each pagination cursor has a separate cache entry. Entries are isolated by resolved configuration, authorization, environment, effective directory, protocol version, and declared client capabilities. Tool calls, prompt retrieval, intermediate input requests, and errors are never cached.

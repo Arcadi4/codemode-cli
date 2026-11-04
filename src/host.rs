@@ -100,10 +100,17 @@ pub struct Host {
     timeout: Duration,
     refresh: bool,
     max_bytes: usize,
+    tasks: bool,
 }
 
 impl Host {
-    pub fn new(config: Config, timeout: Duration, refresh: bool, max_bytes: usize) -> Self {
+    pub fn new(
+        config: Config,
+        timeout: Duration,
+        refresh: bool,
+        max_bytes: usize,
+        tasks: bool,
+    ) -> Self {
         Self {
             config,
             clients: BTreeMap::new(),
@@ -111,6 +118,7 @@ impl Host {
             timeout,
             refresh,
             max_bytes,
+            tasks,
         }
     }
 
@@ -121,7 +129,7 @@ impl Host {
                 .timeout_ms
                 .map(Duration::from_millis)
                 .map_or(self.timeout, |source| source.min(self.timeout));
-            let client = Client::new(resolved, timeout, self.refresh, self.max_bytes)?;
+            let client = Client::new(resolved, timeout, self.refresh, self.max_bytes, self.tasks)?;
             self.clients.insert(server.to_owned(), client);
         }
         Ok(self.clients.get_mut(server).expect("client inserted"))
@@ -149,6 +157,26 @@ impl Host {
             "server {server:?} does not advertise {capability}"
         );
         Ok(())
+    }
+
+    pub async fn require_extension(&mut self, server: &str, identifier: &str) -> Result<()> {
+        ensure!(
+            self.discover(server)
+                .await?
+                .get("capabilities")
+                .and_then(|caps| caps.get("extensions"))
+                .and_then(|extensions| extensions.get(identifier))
+                .is_some_and(Value::is_object),
+            "server {server:?} does not advertise extension {identifier:?}"
+        );
+        Ok(())
+    }
+
+    pub async fn request(&mut self, server: &str, method: &str, params: Value) -> Result<Value> {
+        self.client(server)?
+            .request(method, params, None)
+            .await
+            .with_context(|| format!("server {server:?}"))
     }
 
     pub async fn catalog(
@@ -378,7 +406,12 @@ impl Host {
                 Some(input_schema),
             )
             .await?;
-        if result.get("isError").and_then(Value::as_bool) != Some(true)
+        if result.get("resultType").and_then(Value::as_str) == Some("task") {
+            self.require_extension(&entry.server, crate::tasks::EXTENSION)
+                .await?;
+        }
+        if result.get("resultType").and_then(Value::as_str) != Some("task")
+            && result.get("isError").and_then(Value::as_bool) != Some(true)
             && let Some(output_schema) = entry.definition.get("outputSchema")
         {
             let output = result

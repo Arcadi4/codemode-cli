@@ -7,6 +7,7 @@ mod import;
 mod mcp;
 mod output;
 mod schema;
+mod tasks;
 mod transport;
 
 use clap::Parser;

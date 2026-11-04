@@ -36,6 +36,7 @@ pub struct Client {
     cache: Cache,
     timeout: Duration,
     max_bytes: usize,
+    tasks: bool,
     next_id: u64,
     in_flight: Option<u64>,
 }
@@ -46,9 +47,10 @@ impl Client {
         timeout: Duration,
         refresh: bool,
         max_bytes: usize,
+        tasks: bool,
     ) -> Result<Self> {
         let context = format!(
-            "cm:{PROTOCOL_VERSION}:{}:{}",
+            "cm:{PROTOCOL_VERSION}:{}:{}:tasks={tasks}",
             env!("CARGO_PKG_VERSION"),
             server.fingerprint()
         );
@@ -60,6 +62,7 @@ impl Client {
             cache: Cache::new(context.as_bytes(), refresh)?,
             timeout,
             max_bytes,
+            tasks,
             next_id: 1,
             in_flight: None,
         })
@@ -154,7 +157,7 @@ impl Client {
         request_params.insert("_meta".into(), json!({
             "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
             "io.modelcontextprotocol/clientInfo": {"name":"codemode-cli", "version":env!("CARGO_PKG_VERSION")},
-            "io.modelcontextprotocol/clientCapabilities": {}
+            "io.modelcontextprotocol/clientCapabilities": if self.tasks { json!({"extensions":{(crate::tasks::EXTENSION):{}}}) } else { json!({}) }
         }));
         let request: Message = serde_json::from_value(
             json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
@@ -188,6 +191,17 @@ impl Client {
                 match result.get("resultType") {
                     None => {} // Required backwards-compatible interpretation from the spec.
                     Some(Value::String(kind)) if kind == "complete" => {}
+                    Some(Value::String(kind)) if kind == "task" => {
+                        ensure!(
+                            self.tasks,
+                            "server returned a task without negotiated support; use --tasks with a compatible server"
+                        );
+                        ensure!(
+                            method == "tools/call",
+                            "Tasks extension receipts are only supported for tools/call"
+                        );
+                        crate::tasks::validate_receipt(&result)?;
+                    }
                     Some(Value::String(kind)) if kind == "input_required" => bail!(
                         "server requested client input; cm does not support elicitation, sampling, or roots"
                     ),
@@ -212,6 +226,14 @@ impl Client {
                     -32022 => bail!(
                         "server rejects MCP {PROTOCOL_VERSION}; older protocol versions are not supported ({message})"
                     ),
+                    -32021
+                        if error
+                            .pointer("/data/requiredCapabilities/extensions")
+                            .and_then(|extensions| extensions.get(crate::tasks::EXTENSION))
+                            .is_some() =>
+                    {
+                        bail!("server requires the Tasks extension; opt in explicitly with --tasks")
+                    }
                     -32021 => bail!(
                         "server requires unsupported client capabilities; cm does not offer elicitation or deprecated capabilities ({message})"
                     ),

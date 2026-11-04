@@ -9,10 +9,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    cli::{Cli, Command, Prompts, Resources, Servers, Skills, Tools},
+    cli::{Cli, Command, Prompts, Resources, Servers, Skills, Tasks, Tools},
     config::Config,
     host::{CatalogKind, Host},
-    import, output,
+    import, output, tasks,
 };
 
 const CORE_SKILL: &str = include_str!("../skills/core/SKILL.md");
@@ -34,6 +34,7 @@ pub fn run(cli: Cli) -> Result<()> {
         selected_server,
         timeout,
         max_response_bytes,
+        tasks_enabled,
     } = cli;
     match command {
         Command::Import(args) => {
@@ -105,12 +106,13 @@ pub fn run(cli: Cli) -> Result<()> {
             // Consume stdin before starting servers or installing async signal handlers.
             let payload = prepare_payload(&command)?;
             let config = load_config()?;
+            let tasks_enabled = tasks_enabled || matches!(command, Command::Tasks { .. });
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
             runtime.block_on(async move {
                 let max_bytes = usize::try_from(max_response_bytes).context("response limit is too large for this platform")?;
-                let mut host = Host::new(config, Duration::from_secs(timeout), refresh, max_bytes);
+                let mut host = Host::new(config, Duration::from_secs(timeout), refresh, max_bytes, tasks_enabled);
                 let mut stdout = io::stdout().lock();
                 let result = tokio::select! {
                     result = execute(&mut host, command, payload, selected_server.as_deref(), json, &mut stdout) => result,
@@ -306,6 +308,20 @@ async fn execute(
         Command::Servers {
             command: Servers::Discover { server },
         } => write_json(host.discover(&server).await?, stdout),
+        Command::Tasks { command } => match command {
+            Tasks::Get { server, task_id } => {
+                let result = tasks::get(host, &server, &task_id).await?;
+                let failed = tasks::failed(&result);
+                write_json(&result, stdout)?;
+                if failed {
+                    bail!("task {task_id:?} did not complete successfully");
+                }
+                Ok(())
+            }
+            Tasks::Cancel { server, task_id } => {
+                write_json(&tasks::cancel(host, &server, &task_id).await?, stdout)
+            }
+        },
         _ => unreachable!("local commands execute before the runtime starts"),
     }
 }

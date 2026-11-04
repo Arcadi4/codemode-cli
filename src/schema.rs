@@ -142,6 +142,7 @@ pub fn request_headers(
     let name = match method {
         "tools/call" | "prompts/get" => params.get("name"),
         "resources/read" => params.get("uri"),
+        "tasks/get" | "tasks/cancel" => params.get("taskId"),
         _ => None,
     };
     if let Some(name) = name.and_then(Value::as_str) {

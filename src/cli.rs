@@ -26,6 +26,9 @@ pub struct Cli {
     /// Maximum encoded server response size in bytes (raise for large media)
     #[arg(long, global = true, default_value = "67108864", value_parser = clap::value_parser!(u64).range(1..))]
     pub max_response_bytes: u64,
+    /// Opt into durable asynchronous task handles instead of requiring inline results
+    #[arg(long = "tasks", global = true)]
+    pub tasks_enabled: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -58,6 +61,11 @@ pub enum Command {
     Skills {
         #[command(subcommand)]
         command: Skills,
+    },
+    /// Poll or cancel durable Tasks extension handles (explicitly opts into Tasks)
+    Tasks {
+        #[command(subcommand)]
+        command: Tasks,
     },
 }
 
@@ -166,4 +174,12 @@ pub enum Skills {
     List,
     /// Read a built-in skill (start with core)
     Read { skill: String },
+}
+
+#[derive(Subcommand)]
+pub enum Tasks {
+    /// Fetch task state/result; respect pollIntervalMs before a subsequent poll
+    Get { server: String, task_id: String },
+    /// Request cooperative cancellation; acknowledgement does not prove work stopped
+    Cancel { server: String, task_id: String },
 }
