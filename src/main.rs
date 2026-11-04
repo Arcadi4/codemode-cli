@@ -8,6 +8,7 @@ mod import;
 mod mcp;
 mod output;
 mod schema;
+mod search;
 mod tasks;
 mod transport;
 

@@ -92,6 +92,8 @@ pub struct ImportArgs {
 pub enum Tools {
     /// List compact tool summaries as JSON; names are <server>_<tool>
     List,
+    /// Search tool metadata with bounded, selectable summary fields
+    Search(crate::search::SearchArgs),
     /// Print a tool's input and output JSON Schemas
     Schema { tool: String },
     /// Print a tool's full definition plus server instructions

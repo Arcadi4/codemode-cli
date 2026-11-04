@@ -12,7 +12,7 @@ use crate::{
     cli::{Cli, Command, Prompts, Resources, Servers, Skills, Tasks, Tools},
     config::Config,
     host::{CatalogKind, Host},
-    import, output, tasks,
+    import, output, search, tasks,
 };
 
 const CORE_SKILL: &str = include_str!("../skills/core/SKILL.md");
@@ -195,6 +195,10 @@ async fn execute(
     match command {
         Command::Tools { command } => match command {
             Tools::List => list(host, CatalogKind::Tools, selected, stdout).await,
+            Tools::Search(args) => {
+                let entries = host.catalog(CatalogKind::Tools, selected).await?;
+                write_json(&search::search(entries, &args), stdout)
+            }
             Tools::Schema { tool } => {
                 let entry = host.locate(CatalogKind::Tools, &tool, selected).await?;
                 write_json(&entry.schema(CatalogKind::Tools), stdout)

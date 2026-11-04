@@ -11,6 +11,7 @@ description: Use when discovering or invoking MCP tools, prompts, or resources f
 
 1. Run `cm servers list`. It reads supported clients' configurations plus the per-user global config without starting servers. Use `cm import <client>` or `cm import --all` to copy definitions into the global config when needed.
 2. Run `cm tools list` (optionally `--server NAME`) for compact names/descriptions. Names are `<server>_<tool>`; use the exact listed name.
+   Use `cm tools search QUERY` for bounded metadata matches; `--limit` and `--fields` control the result.
 3. Run `cm tools discover NAME` for the full tool specification **and server instructions**. `cm tools schema NAME` retrieves just input/output schemas. Read the instructions before invoking the tool.
 4. Run `cm tools call NAME '{"key":"value"}'`. Arguments can also be `@file.json` or `-` to read a JSON object from stdin. No arguments means `{}`.
 

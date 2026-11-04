@@ -28,6 +28,7 @@ cargo fmt --check
 | `src/import.rs` | Client discovery, per-client parsers, draft-to-config conversion |
 | `src/credentials.rs` | File-based and macOS native token stores |
 | `src/host.rs` | Catalog aggregation, name resolution, capability/extension checks |
+| `src/search.rs` | Ranked tool-metadata search and selected summary fields |
 | `src/mcp.rs` | JSON-RPC client, discovery probe, pagination, cache integration |
 | `src/transport.rs` | Stdio and Streamable HTTP transports, process lifecycle |
 | `src/cache.rs` | TTL response cache |
@@ -83,6 +84,7 @@ cargo fmt --check
 - `--json` preserves complete result envelopes. Image/audio `data` and resource `blob` fields become `{ "path": "/absolute/file" }` descriptors. Other fields remain intact. Artifacts have owner-only permissions and survive command exit; remove them when no longer needed. Links are not downloaded, and returned HTML is never executed.
 - Diagnostics and server stderr stay on stderr. Exit status is `0` for success, `1` for operational/tool errors, `2` for usage errors, `130` for SIGINT, and `143` for SIGTERM. Broken pipes terminate quietly. A timeout/interruption does not prove a side effect did not execute; interrupted calls are not automatically replayed.
 - Unscoped tool, prompt, resource, and template catalogs skip failed servers with stderr diagnostics and return usable results, or `[]`, with status `0`. `--server` and targeted operations still fail when their target fails. Ambiguous names remain visible in lists; use `--server` to select the source.
+- `cm tools search QUERY` matches all whitespace-separated terms case-insensitively across names, titles, and descriptions. Exact names rank before prefixes, substrings, and metadata-only matches; names and servers break ties. `--limit` defaults to 20 and must be positive. `--fields` selects `name,server,title,description`; defaults are `name,server,description`. Full schemas remain in `tools schema`/`discover`.
 - `--timeout` bounds each request, including startup/probing; a shorter source-client timeout still applies. `--max-response-bytes` defaults to 64 MiB of encoded response data and can be raised for large media.
 
 ## Cache
