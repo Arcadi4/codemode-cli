@@ -339,6 +339,32 @@ fn handle_request(mut request: Request, records: &Mutex<Vec<Record>>) {
         );
         return;
     }
+    if authorization == "Bearer partial"
+        && method != "server/discover"
+        && (method != "tools/list" || params.get("cursor").is_some())
+    {
+        reply(
+            request,
+            200,
+            "application/json",
+            error_body(id, -32603, "catalog unavailable"),
+        );
+        return;
+    }
+    if authorization == "Bearer collision" && method == "tools/list" {
+        reply(
+            request,
+            200,
+            "application/json",
+            result_body(
+                id,
+                json!({
+                    "tools": [tool("live_echo", "Overlapping name", json!({"type":"object"}), None)]
+                }),
+            ),
+        );
+        return;
+    }
 
     match method.as_str() {
         "server/discover" => {
@@ -1000,4 +1026,125 @@ fn prompts_resources_and_completion_are_usable_end_to_end() {
     assert_eq!(resource_completion["values"], json!(["alpha", "amber"]));
 
     fixture.assert_modern_protocol_only();
+}
+
+#[test]
+fn aggregate_catalogs_isolate_failures_but_explicit_servers_fail() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "a_legacy": {"url": fixture.endpoint, "headers": {"Authorization": "Bearer legacy"}},
+        "b_missing": {"command": workspace.root.path().join("absent-server")},
+        "c_credentials": {"url": fixture.endpoint, "headers": {"Authorization": "${CM_TEST_ABSENT_TOKEN}"}},
+        "d_partial": {"url": fixture.endpoint, "headers": {"Authorization": "Bearer partial"}},
+        "healthy": {"url": fixture.endpoint}
+    }));
+    for (arguments, expected_names) in [
+        (
+            vec!["tools", "list"],
+            vec![
+                "healthy_echo",
+                "healthy_fails",
+                "healthy_headers",
+                "healthy_image",
+                "healthy_loud",
+                "healthy_needs_input",
+                "healthy_sse",
+                "healthy_structured",
+            ],
+        ),
+        (vec!["prompts", "list"], vec!["healthy_greet"]),
+        (
+            vec!["resources", "list"],
+            vec!["healthy_note", "healthy_note"],
+        ),
+        (
+            vec!["resources", "templates"],
+            vec!["healthy_note_template"],
+        ),
+    ] {
+        let run = workspace.run(&arguments);
+        assert_eq!(run.code, Some(0), "{}", run.stderr);
+        let result: Value = serde_json::from_str(&run.stdout).unwrap();
+        assert_eq!(
+            result
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        for server in ["a_legacy", "b_missing", "c_credentials", "d_partial"] {
+            assert!(run.stderr.contains(server), "{}", run.stderr);
+            let mut targeted = vec!["--server", server];
+            targeted.extend(&arguments);
+            let failed = workspace.run(&targeted);
+            failed.assert_failed();
+            failed.assert_stdout_empty();
+        }
+    }
+    workspace.write_config(json!({"unavailable": {"url": fixture.endpoint, "headers": {"Authorization": "Bearer legacy"}}}));
+    let run = workspace.run(&["tools", "list"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(
+        serde_json::from_str::<Value>(&run.stdout).unwrap(),
+        json!([])
+    );
+}
+
+#[test]
+fn namespaced_operations_ignore_unavailable_overlapping_server_prefixes() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "group": {"url": fixture.endpoint, "headers": {"Authorization": "Bearer legacy"}},
+        "group_live": {"url": fixture.endpoint}
+    }));
+    for (arguments, expected) in [
+        (
+            vec!["tools", "call", "group_live_echo", r#"{"text":"hello"}"#],
+            "echo:hello\n",
+        ),
+        (
+            vec!["prompts", "get", "group_live_greet", r#"{"name":"Ada"}"#],
+            "user:\nHello, Ada!\n",
+        ),
+    ] {
+        let run = workspace.run(&arguments);
+        assert_eq!(run.code, Some(0), "{}", run.stderr);
+        assert_eq!(run.stdout, expected);
+    }
+    let failed = workspace.run(&["tools", "schema", "group_echo"]);
+    failed.assert_failed();
+    failed.assert_stdout_empty();
+}
+
+#[test]
+fn aggregate_namespace_collisions_remain_visible_for_explicit_disambiguation() {
+    let fixture = Fixture::start();
+    let workspace = Workspace::new();
+    workspace.write_config(json!({
+        "group": {"url": fixture.endpoint, "headers": {"Authorization": "Bearer collision"}},
+        "group_live": {"url": fixture.endpoint}
+    }));
+    let run = workspace.run(&["tools", "list"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let result: Value = serde_json::from_str(&run.stdout).unwrap();
+    let sources: std::collections::BTreeSet<_> = result
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["name"] == "group_live_echo")
+        .map(|entry| entry["server"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        sources,
+        std::collections::BTreeSet::from(["group", "group_live"])
+    );
+    let ambiguous = workspace.run(&["tools", "schema", "group_live_echo"]);
+    ambiguous.assert_failed();
+    ambiguous.assert_stdout_empty();
+    let schema = workspace.run_json(&["--server", "group", "tools", "schema", "group_live_echo"]);
+    assert_eq!(schema["inputSchema"], json!({"type":"object"}));
 }

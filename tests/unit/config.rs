@@ -120,6 +120,245 @@ fn vscode_profile_configs_are_discovered_without_profile_precedence() {
 }
 
 #[test]
+fn vscode_profile_conflicts_exclude_server_and_keep_healthy_definitions() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let global = temp.path().join("config/codemode/mcp.json");
+    let env = BTreeMap::from([(
+        "APPDATA".to_string(),
+        temp.path().join("appdata").to_string_lossy().into_owned(),
+    )]);
+    let user = vscode_user_dir(&home, &env);
+    let default_config = user.join("mcp.json");
+    let profile_a = user.join("profiles/profile-a/mcp.json");
+    let profile_b = user.join("profiles/profile-b/mcp.json");
+
+    write(
+        &default_config,
+        r#"{"servers":{
+            "baseline":{"type":"stdio","command":"default-server"},
+            "shared":{"type":"stdio","command":"default-server"}
+        }}"#,
+    );
+    write(
+        &profile_a,
+        r#"{"servers":{"shared":{"type":"stdio","command":"alpha-server"}}}"#,
+    );
+    write(
+        &profile_b,
+        r#"{"servers":{"shared":{"type":"stdio","command":"beta-server"}}}"#,
+    );
+
+    let options = load_options(&project, &home, &global, Some(vec![Client::Vscode]), env);
+    let config = Config::load_from(&options).unwrap();
+    assert_eq!(
+        config.get("baseline").unwrap().command.as_deref(),
+        Some("default-server")
+    );
+    assert!(
+        config.get("shared").is_none(),
+        "ambiguous profile server must be excluded from automatic discovery"
+    );
+    let warnings = config.warnings.join("\n");
+    for path in [&default_config, &profile_a, &profile_b] {
+        assert!(warnings.contains(&path.display().to_string()), "{warnings}");
+    }
+
+    let report = Config::import_with(
+        &options,
+        &[Client::Vscode],
+        &ImportOptions {
+            force: false,
+            path: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(report.added, vec!["baseline".to_string()]);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("shared"))
+    );
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&global).unwrap()).unwrap();
+    assert_eq!(
+        written["mcpServers"]["baseline"]["command"],
+        "default-server"
+    );
+    assert!(written["mcpServers"].get("shared").is_none());
+
+    write(
+        &global,
+        r#"{"mcpServers":{"shared":{"command":"global-server"}}}"#,
+    );
+    let config = Config::load_from(&options).unwrap();
+    assert_eq!(
+        config.get("shared").unwrap().command.as_deref(),
+        Some("global-server")
+    );
+
+    write(&global, r#"{"mcpServers":{}}"#);
+    write(
+        &project.join(".vscode/mcp.json"),
+        r#"{"servers":{"shared":{"type":"stdio","command":"workspace-server"}}}"#,
+    );
+    let config = Config::load_from(&options).unwrap();
+    assert_eq!(
+        config.get("shared").unwrap().command.as_deref(),
+        Some("workspace-server")
+    );
+
+    fs::remove_file(project.join(".vscode/mcp.json")).unwrap();
+    let config = Config::load_from(&options).unwrap();
+    assert!(config.get("shared").is_none());
+    assert_eq!(
+        config.get("baseline").unwrap().command.as_deref(),
+        Some("default-server")
+    );
+
+    let report = Config::import_with(
+        &options,
+        &[Client::Vscode],
+        &ImportOptions {
+            force: false,
+            path: Some(profile_a.clone()),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.added, vec!["shared".to_string()]);
+    let config = Config::load_from(&options).unwrap();
+    assert_eq!(
+        config.get("shared").unwrap().command.as_deref(),
+        Some("alpha-server")
+    );
+}
+
+#[test]
+fn conflicting_client_definitions_are_excluded_without_losing_healthy_servers() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let global = temp.path().join("config/codemode/mcp.json");
+    let cursor = project.join(".cursor/mcp.json");
+    let codex = project.join(".codex/config.toml");
+
+    write(
+        &cursor,
+        r#"{"mcpServers":{
+            "shared":{"command":"cursor-server"},
+            "cursor-only":{"command":"cursor-only-server"}
+        }}"#,
+    );
+    write(
+        &codex,
+        "[mcp_servers.shared]\ncommand = \"codex-server\"\n\
+         [mcp_servers.codex-only]\ncommand = \"codex-only-server\"\n",
+    );
+
+    let options = load_options(
+        &project,
+        &home,
+        &global,
+        Some(vec![Client::Cursor, Client::Codex]),
+        BTreeMap::new(),
+    );
+    let config = Config::load_from(&options).unwrap();
+    assert!(
+        config.get("shared").is_none(),
+        "conflicting clients must not pick an arbitrary definition"
+    );
+    assert_eq!(
+        config.get("cursor-only").unwrap().command.as_deref(),
+        Some("cursor-only-server")
+    );
+    assert_eq!(
+        config.get("codex-only").unwrap().command.as_deref(),
+        Some("codex-only-server")
+    );
+    let warnings = config.warnings.join("\n");
+    assert!(warnings.contains("shared"), "{warnings}");
+    assert!(
+        warnings.contains(&cursor.display().to_string()),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains(&codex.display().to_string()),
+        "{warnings}"
+    );
+
+    let report = Config::import_with(
+        &options,
+        &[Client::Cursor, Client::Codex],
+        &ImportOptions {
+            force: false,
+            path: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        report.added,
+        vec!["codex-only".to_string(), "cursor-only".to_string()]
+    );
+    let skipped: Vec<&str> = report
+        .skipped
+        .iter()
+        .map(|skip| skip.name.as_str())
+        .collect();
+    assert_eq!(skipped, vec!["shared"]);
+    let reason = &report.skipped[0].reason;
+    assert!(reason.contains(&cursor.display().to_string()), "{reason}");
+    assert!(reason.contains(&codex.display().to_string()), "{reason}");
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&global).unwrap()).unwrap();
+    assert!(written["mcpServers"].get("shared").is_none());
+    assert_eq!(
+        written["mcpServers"]["cursor-only"]["command"],
+        "cursor-only-server"
+    );
+}
+
+#[test]
+fn import_keeps_healthy_entries_from_partially_invalid_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let global = temp.path().join("config/codemode/mcp.json");
+    write(
+        &project.join(".cursor/mcp.json"),
+        r#"{"mcpServers":{
+            "bad":{"command":42},
+            "good":{"command":"cursor-server"}
+        }}"#,
+    );
+
+    let options = load_options(
+        &project,
+        &home,
+        &global,
+        Some(vec![Client::Cursor]),
+        BTreeMap::new(),
+    );
+    let report = Config::import_with(
+        &options,
+        &[Client::Cursor],
+        &ImportOptions {
+            force: false,
+            path: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(report.added, vec!["good".to_string()]);
+    assert!(!report.warnings.is_empty());
+
+    let config = Config::load_from(&options).unwrap();
+    assert_eq!(
+        config.get("good").unwrap().command.as_deref(),
+        Some("cursor-server")
+    );
+    assert!(config.get("bad").is_none());
+}
+
+#[test]
 fn import_conflict_without_force_fails_and_does_not_write() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");

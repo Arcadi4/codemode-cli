@@ -54,9 +54,19 @@ fn discovery_keeps_valid_sources_when_other_configs_are_invalid_or_missing() {
         ".codex/config.toml",
         "[mcp_servers.working]\ncommand = 'fixture-server'\n",
     );
-    workspace.write(".mcp.json", r#"{"mcpServers":{"invalid":{"args":[]}}}"#);
+    workspace.write(
+        ".mcp.json",
+        r#"{"mcpServers":{
+            "invalid":{"args":[]},
+            "bad-shape":{"command":42},
+            "copilot-good":{"command":"fixture-server"}
+        }}"#,
+    );
 
-    let servers = successful_json(workspace.run(&["servers", "list"]));
+    let output = workspace.run(&["servers", "list"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(stderr.contains("bad-shape"), "{stderr}");
+    let servers = successful_json(output);
     assert_eq!(
         servers
             .as_array()
@@ -64,9 +74,44 @@ fn discovery_keeps_valid_sources_when_other_configs_are_invalid_or_missing() {
             .iter()
             .map(|server| server["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["working"]
+        vec!["copilot-good", "working"]
     );
     assert_eq!(fs::read_to_string(workspace.global()).unwrap(), "{broken");
+}
+
+#[test]
+fn invalid_global_entries_warn_but_import_never_overwrites_them() {
+    let workspace = Workspace::new();
+    let original = r#"{"mcpServers":{
+        "bad":{"command":42},
+        "existing":{"command":"existing-server"}
+    }}"#;
+    workspace.write("global.json", original);
+
+    let output = workspace.run(&["servers", "list"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(stderr.contains("bad"), "{stderr}");
+    let servers = successful_json(output);
+    assert_eq!(
+        servers
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| server["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["existing"]
+    );
+
+    workspace.write(
+        ".cursor/mcp.json",
+        r#"{"mcpServers":{"added":{"command":"cursor-server"}}}"#,
+    );
+    let output = workspace.run(&["import", "cursor", "--force"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stderr.is_empty(), "invalid destination must be reported");
+    let report = successful_json(output);
+    assert_eq!(report["added"], json!([]));
+    assert_eq!(fs::read_to_string(workspace.global()).unwrap(), original);
 }
 
 #[test]
