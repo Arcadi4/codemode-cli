@@ -13,7 +13,6 @@ use sha2::{Digest, Sha256};
 
 use crate::import::{self, Client, ImportOptions, ImportReport};
 
-/// Value written by [`ServerConfig::redacted`] in place of a secret.
 pub const REDACTED: &str = "<redacted>";
 
 const FINGERPRINT_VERSION: &str = "codemode-resolved-v1";
@@ -102,30 +101,6 @@ impl ServerConfig {
         Ok(())
     }
 
-    /// Secret-safe clone suitable for inspection and listing.
-    pub fn redacted(&self) -> Self {
-        let mut redacted = self.clone();
-        for (key, value) in &mut redacted.env {
-            if secret_key(key) {
-                *value = REDACTED.to_string();
-            }
-        }
-        for (key, value) in &mut redacted.headers {
-            if secret_key(key) {
-                *value = REDACTED.to_string();
-            }
-        }
-        redacted.args = redacted
-            .args
-            .iter()
-            .map(|arg| redact_argument(arg))
-            .collect();
-        redacted.url = redacted.url.as_deref().map(redact_url);
-        for value in redacted.extra.values_mut() {
-            *value = Value::String(REDACTED.to_string());
-        }
-        redacted
-    }
 
     pub(crate) fn same_definition(&self, other: &Self, include_disabled: bool) -> bool {
         self.command == other.command
@@ -574,15 +549,6 @@ impl LoadOptions {
         })
     }
 
-    pub fn isolated(cwd: impl Into<PathBuf>, config: impl Into<PathBuf>) -> Self {
-        Self {
-            cwd: cwd.into(),
-            home: None,
-            global_path: Some(config.into()),
-            clients: Some(Vec::new()),
-            env: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -819,10 +785,6 @@ impl Config {
         })
     }
 
-    pub fn global_path() -> Result<PathBuf> {
-        let opts = LoadOptions::from_env()?;
-        Self::global_path_from(&opts)
-    }
 
     pub fn global_path_from(opts: &LoadOptions) -> Result<PathBuf> {
         let path = if let Some(path) = &opts.global_path {
@@ -1636,22 +1598,6 @@ fn secret_key(key: &str) -> bool {
     .any(|needle| key.contains(needle))
 }
 
-fn redact_argument(argument: &str) -> String {
-    if let Some((key, _)) = argument.split_once('=') {
-        if secret_key(key.trim_start_matches('-')) {
-            return format!("{key}={REDACTED}");
-        }
-    }
-    if argument.starts_with("ghp_")
-        || argument.starts_with("github_pat_")
-        || argument.starts_with("sk-")
-        || argument.starts_with("xoxb-")
-        || argument.starts_with("xoxp-")
-    {
-        return REDACTED.to_string();
-    }
-    argument.to_string()
-}
 
 fn safe_endpoint(raw: &str) -> String {
     let Some((scheme, rest)) = raw.split_once("://") else {

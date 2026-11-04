@@ -12,16 +12,28 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 fs2 = "0.4"
+futures-util = { version = "0.3", features = ["sink"] }
 hex = "0.4"
 json5 = "1"
+jsonschema = { version = "0.60", default-features = false }
+mime_guess = "2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+rmcp = { version = "3.8", default-features = false, features = ["client", "transport-async-rw"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sse-stream = "0.2"
 tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 toml = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "process"] }
 
 [profile.release]
 strip = true
