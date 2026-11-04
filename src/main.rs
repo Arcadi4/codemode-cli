@@ -58,3 +58,7 @@ mod credential_tests;
 #[cfg(test)]
 #[path = "../tests/unit/output.rs"]
 mod output_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/search.rs"]
+mod search_tests;

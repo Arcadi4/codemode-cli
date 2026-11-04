@@ -14,7 +14,7 @@ cargo fmt --check
 ```
 
 - `tests/cli.rs`, `tests/tasks.rs`, and `tests/config_loading.rs` are end-to-end tests. They drive `CARGO_BIN_EXE_cm` against an in-process `tiny_http` MCP fixture, clear the environment, and point `HOME`, `XDG_*`, `CM_CONFIG`, and `CM_CACHE_DIR` at a temp directory with `CM_CLIENTS=none`. Keep new tests equally hermetic.
-- `tests/unit/{config,credentials,output}.rs` are unit tests compiled into the binary through `#[path]` declarations in `src/main.rs`; they can reach private items.
+- `tests/unit/{config,credentials,output,search}.rs` are unit tests compiled into the binary through `#[path]` declarations in `src/main.rs`; they can reach private items.
 - There is no CI workflow; Dependabot updates Cargo dependencies weekly.
 
 ## Module map
