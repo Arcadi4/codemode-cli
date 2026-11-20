@@ -865,9 +865,13 @@ fn read_storage_rows(
 
 #[cfg(target_os = "macos")]
 fn keychain_password(service: &str, account: &str, label: &str) -> Result<Option<String>> {
-    use keyring::{Entry, Error};
+    use apple_native_keyring_store::keychain::Store;
+    use keyring_core::{CredentialStore, Entry, Error};
+    use std::sync::Arc;
 
-    let entry = Entry::new(service, account)
+    let store: Arc<CredentialStore> = Store::new()
+        .map_err(|error| anyhow!("cannot open the {label} macOS Keychain store: {error}"))?;
+    let entry = Entry::new_in_store(&store, service, account)
         .map_err(|error| anyhow!("cannot open the {label} macOS Keychain entry: {error}"))?;
     match entry.get_password() {
         Ok(password) => Ok(Some(password)),
